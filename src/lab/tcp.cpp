@@ -408,14 +408,24 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
           if (tcp->state == ESTABLISHED) {
             // TODO(step 3: send & receive)
             // "If SND.UNA < SEG.ACK =< SND.NXT then, set SND.UNA <- SEG.ACK."
-            UNIMPLEMENTED()
+            if (tcp_seq_lt(tcp->snd_una, seg_ack) && tcp_seq_le(seg_ack, tcp->snd_nxt)) {
+                tcp->snd_una = seg_ack;
+            }
+            // UNIMPLEMENTED()
 
             // TODO(step 3: send & receive)
             // "If SND.UNA < SEG.ACK =< SND.NXT, the send window should be
             // updated.  If (SND.WL1 < SEG.SEQ or (SND.WL1 = SEG.SEQ and
             // SND.WL2 =< SEG.ACK)), set SND.WND <- SEG.WND, set
             // SND.WL1 <- SEG.SEQ, and set SND.WL2 <- SEG.ACK."
-            UNIMPLEMENTED()
+            if (tcp_seq_lt(tcp->snd_wl1, seg_seq) || 
+                ((tcp->snd_wl1 == seg_seq) && tcp_seq_le(tcp->snd_wl2, seg_ack))) {
+                tcp->snd_wnd = seg_wnd;
+                // tcp->snd_wnd = seg_wnd << tcp->wnd_shift_cnt;
+                tcp->snd_wl1 = seg_seq;
+                tcp->snd_wl2 = seg_ack;
+            }
+            // UNIMPLEMENTED()
           }
 
           // "FIN-WAIT-1 STATE"
@@ -453,11 +463,33 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
             // RCV.NXT over the data accepted, and adjusts RCV.WND as
             // appropriate to the current buffer availability.  The total of
             // RCV.NXT and RCV.WND should not be reduced."
-            UNIMPLEMENTED()
+            
+            // assert(tcp->rcv_nxt <= seg_seq);
+            size_t res = tcp->recv.write(payload, seg_len);
+            tcp->rcv_nxt = tcp->rcv_nxt + res;
+            tcp->rcv_wnd = tcp->recv.free_bytes();
+            // UNIMPLEMENTED()
 
             // "Send an acknowledgment of the form:
             // <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>"
-            UNIMPLEMENTED()
+            uint8_t buffer[40];
+            construct_ip_header(buffer, tcp, sizeof(buffer));
+            // tcp
+            TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+            memset(tcp_hdr, 0, 20);
+            tcp_hdr->source = htons(tcp->local_port);
+            tcp_hdr->dest = htons(tcp->remote_port);
+            tcp_hdr->seq = htonl(tcp->snd_nxt);
+            tcp_hdr->ack_seq = htonl(tcp->rcv_nxt);
+            // flags
+            tcp_hdr->doff = 20 / 4; // 32 bytes
+            tcp_hdr->ack = 1;
+            // window size
+            tcp_hdr->window = htons(tcp->recv.free_bytes());
+            
+            update_tcp_ip_checksum(buffer);
+            send_packet(buffer, sizeof(buffer));
+            // UNIMPLEMENTED()
           }
         }
 
@@ -730,8 +762,8 @@ void tcp_connect(int fd, uint32_t dst_addr, uint16_t dst_port) {
 
   // TODO(step 3: send & receive)
   // window size: size of empty bytes in recv buffer
-  tcp_hdr->window = 0;
-  UNIMPLEMENTED_WARN();
+  tcp_hdr->window = htons(tcp->recv.free_bytes());
+  // UNIMPLEMENTED_WARN();
 
   // mss option, rfc793 page 18
   // https://www.rfc-editor.org/rfc/rfc793.html#page-18
@@ -766,47 +798,52 @@ ssize_t tcp_write(int fd, const uint8_t *data, size_t size) {
     // consider mss and send sequence space
     // send sequence space: https://www.rfc-editor.org/rfc/rfc793.html#page-20 figure 4
     // compute the segment length to send
-    size_t segment_len = 0;
-    UNIMPLEMENTED()
 
-    if (segment_len > 0) {
-      printf("Sending segment of len %zu to remote\n", segment_len);
-      // send data now
+    while (bytes_to_send){
+      size_t segment_len = min(bytes_to_send, tcp->remote_mss);
+      bytes_to_send -= segment_len;
+      // UNIMPLEMENTED()
 
-      // 20 IP header & 20 TCP header
-      uint16_t total_length = 20 + 20 + segment_len;
-      uint8_t buffer[MTU];
-      construct_ip_header(buffer, tcp, total_length);
+      if (segment_len > 0) {
+        printf("Sending segment of len %zu to remote\n", segment_len);
+        // send data now
 
-      // tcp
-      TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
-      memset(tcp_hdr, 0, 20);
-      tcp_hdr->source = htons(tcp->local_port);
-      tcp_hdr->dest = htons(tcp->remote_port);
-      // this segment occupies range:
-      // [snd_nxt, snd_nxt+seg_len)
-      tcp_hdr->seq = htonl(tcp->snd_nxt);
-      tcp->snd_nxt += segment_len;
-      // flags
-      tcp_hdr->doff = 20 / 4; // 20 bytes
+        // 20 IP header & 20 TCP header
+        uint16_t total_length = 20 + 20 + segment_len;
+        uint8_t buffer[MTU];
+        construct_ip_header(buffer, tcp, total_length);
 
-      // TODO(step 3: send & receive)
-      // set ack bit and ack_seq
+        // tcp
+        TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+        memset(tcp_hdr, 0, 20);
+        tcp_hdr->source = htons(tcp->local_port);
+        tcp_hdr->dest = htons(tcp->remote_port);
+        // this segment occupies range:
+        // [snd_nxt, snd_nxt+seg_len)
+        tcp_hdr->seq = htonl(tcp->snd_nxt);
+        tcp->snd_nxt += segment_len;
+        // flags
+        tcp_hdr->doff = 20 / 4; // 20 bytes
 
-      // TODO(step 3: send & receive)
-      // window size: size of empty bytes in recv buffer
-      tcp_hdr->window = 0;
-      UNIMPLEMENTED();
+        // TODO(step 3: send & receive)
+        // set ack bit and ack_seq
+        tcp_hdr->ack = 1;
+        tcp_hdr->ack_seq = htonl(tcp->rcv_nxt);
 
-      // payload
-      size_t bytes_read = tcp->send.read(&buffer[40], segment_len);
-      // should never fail
-      assert(bytes_read == segment_len);
+        // TODO(step 3: send & receive)
+        // window size: size of empty bytes in recv buffer
+        tcp_hdr->window = htons(tcp->recv.free_bytes());
+        // UNIMPLEMENTED();
 
-      update_tcp_ip_checksum(buffer);
-      send_packet(buffer, total_length);
+        // payload
+        size_t bytes_read = tcp->send.read(&buffer[40], segment_len);
+        // should never fail
+        assert(bytes_read == segment_len);
+
+        update_tcp_ip_checksum(buffer);
+        send_packet(buffer, total_length);
+      }
     }
-
     return res;
   }
   return -1;
@@ -818,9 +855,8 @@ ssize_t tcp_read(int fd, uint8_t *data, size_t size) {
 
   // TODO(step 3: send & receive)
   // copy from recv_buffer to user data
-  UNIMPLEMENTED();
-
-  return 0;
+  return tcp->recv.read(data, size);
+  // UNIMPLEMENTED();
 }
 
 void tcp_shutdown(int fd) {
