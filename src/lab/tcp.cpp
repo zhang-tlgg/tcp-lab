@@ -276,7 +276,12 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
           // SEG.SEQ.  SND.UNA should be advanced to equal SEG.ACK (if there
           // is an ACK), and any segments on the retransmission queue which
           // are thereby acknowledged should be removed."
-          UNIMPLEMENTED()
+          tcp->rcv_nxt = seg_seq + 1;
+          tcp->irs = seg_seq;
+          if (tcp_header->ack) {
+              tcp->snd_una = seg_ack;
+              // tcp->pop_from_retransmission_queue(seg_ack);
+          }
 
           if (tcp_seq_gt(tcp->snd_una, tcp->iss)) {
             // "If SND.UNA > ISS (our SYN has been ACKed), change the connection
@@ -287,7 +292,24 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
             // "form an ACK segment
             // <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
             // and send it."
-            UNIMPLEMENTED()
+            uint8_t buffer[40];
+            construct_ip_header(buffer, tcp, sizeof(buffer));
+            // tcp
+            TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+            memset(tcp_hdr, 0, 20);
+            tcp_hdr->source = htons(tcp->local_port);
+            tcp_hdr->dest = htons(tcp->remote_port);
+            tcp_hdr->seq = htonl(tcp->snd_nxt);
+            tcp_hdr->ack_seq = htonl(tcp->rcv_nxt);
+            // flags
+            tcp_hdr->doff = 20 / 4;
+            tcp_hdr->ack = 1;
+            // window size
+            tcp_hdr->window = htons(tcp->recv.free_bytes());
+
+            update_tcp_ip_checksum(buffer);
+            send_packet(buffer, sizeof(buffer));
+            // UNIMPLEMENTED()
 
             // TODO(step 2: 3-way handshake)
             // https://www.rfc-editor.org/rfc/rfc1122#page-94
@@ -296,7 +318,11 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
             // SND.WND <- SEG.WND
             // SND.WL1 <- SEG.SEQ
             // SND.WL2 <- SEG.ACK"
-            UNIMPLEMENTED()
+            tcp->snd_wnd = seg_wnd;
+            // tcp->snd_wnd = seg_wnd << tcp->wnd_shift_cnt;
+            tcp->snd_wl1 = seg_seq;
+            tcp->snd_wl2 = seg_ack;
+            // UNIMPLEMENTED()
           } else {
             // "Otherwise enter SYN-RECEIVED"
             // "form a SYN,ACK segment
