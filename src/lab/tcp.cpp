@@ -77,8 +77,7 @@ uint32_t generate_initial_seq() {
   // "The generator is bound to a (possibly fictitious) 32
   // bit clock whose low order bit is incremented roughly every 4
   // microseconds."
-  UNIMPLEMENTED()
-  return 0;
+  return ((uint32_t)current_ts_usec() >> 2) % 0xffffffff;
 }
 
 void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
@@ -613,23 +612,19 @@ bool verify_tcp_checksum(const IPHeader *ip, const TCPHeader *tcp) {
 
 // TODO(step 1: sequence number comparison and generation)
 bool tcp_seq_lt(uint32_t a, uint32_t b) {
-  UNIMPLEMENTED()
-  return true;
+  return 0 < (b - a) && (b - a) < 0x80000000;
 }
 
 bool tcp_seq_le(uint32_t a, uint32_t b) {
-  UNIMPLEMENTED()
-  return true;
+  return (b - a) < 0x80000000;
 }
 
 bool tcp_seq_gt(uint32_t a, uint32_t b) {
-  UNIMPLEMENTED()
-  return true;
+  return 0 < (a - b) && (a - b) < 0x80000000;
 }
 
 bool tcp_seq_ge(uint32_t a, uint32_t b) {
-  UNIMPLEMENTED()
-  return true;
+  return (a - b) < 0x80000000;
 }
 
 // returns fd
