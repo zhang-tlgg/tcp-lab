@@ -509,7 +509,32 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
           // over the FIN, and send an acknowledgment for the FIN.  Note that
           // FIN implies PUSH for any segment text not yet delivered to the
           // user."
-          UNIMPLEMENTED();
+          // 如果数据段标记了FIN，提示用户“connection closing”,对所有的RECEIVEs
+          // 返回同样的信息。设置RCV.NXT为FIN的数据包的序列号+1，对FIN返回一个确认信息。
+          // FIN和PUSH有相同的作用，把所有已经接收但是还没分发到用户进程的数据，分发到用户进程。
+
+          // advance RCV.NXT over the FIN
+          tcp->rcv_nxt = seg_seq + seg_len + 1;
+
+          // send an acknowledgment for the FIN
+          uint8_t buffer[40];
+          construct_ip_header(buffer, tcp, sizeof(buffer));
+          // tcp
+          TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+          memset(tcp_hdr, 0, 20);
+          tcp_hdr->source = htons(tcp->local_port);
+          tcp_hdr->dest = htons(tcp->remote_port);
+          tcp_hdr->seq = htonl(tcp->snd_nxt);
+          tcp_hdr->ack_seq = htonl(tcp->rcv_nxt);
+          // flags
+          tcp_hdr->doff = 20 / 4; // 32 bytes
+          tcp_hdr->ack = 1;
+          // window size
+          tcp_hdr->window = htons(tcp->recv.free_bytes());
+
+          update_tcp_ip_checksum(buffer);
+          send_packet(buffer, sizeof(buffer));
+          // UNIMPLEMENTED();
 
           if (tcp->state == SYN_RCVD || tcp->state == ESTABLISHED) {
             // Enter the CLOSE-WAIT state
@@ -869,15 +894,60 @@ void tcp_shutdown(int fd) {
     // TODO(step 4: connection termination)
     // "Queue this until all preceding SENDs have been segmentized, then
     // form a FIN segment and send it. In any case, enter FIN-WAIT-1 state."
-    UNIMPLEMENTED();
+    // 缓存这个请求，直到所有以前的发送请求都完成，
+    // 然后生成一个FIN数据段发送出去。然后进入FIN-WAIT-1状态。
 
+    uint8_t buffer[40];
+    construct_ip_header(buffer, tcp, sizeof(buffer));
+    // tcp
+    TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+    memset(tcp_hdr, 0, 20);
+    tcp_hdr->source = htons(tcp->local_port);
+    tcp_hdr->dest = htons(tcp->remote_port);
+    tcp_hdr->seq = htonl(tcp->snd_nxt);
+    // flags
+    tcp_hdr->doff = 20 / 4; // 32 bytes
+    tcp_hdr->fin = 1;
+    // window size
+    tcp_hdr->window = htons(tcp->recv.free_bytes());
+
+    // FIN is a segment
+    tcp->snd_nxt += 1;
+
+    update_tcp_ip_checksum(buffer);
+    send_packet(buffer, sizeof(buffer));
+
+    // UNIMPLEMENTED();
     tcp->set_state(TCPState::FIN_WAIT_1);
   } else if (tcp->state == TCPState::CLOSE_WAIT) {
     // TODO(step 4: connection termination)
     // CLOSE_WAIT STATE
     // "Queue this request until all preceding SENDs have been
     // segmentized; then send a FIN segment, enter LAST-ACK state."
-    UNIMPLEMENTED();
+    // 缓存这个请求，直到所有的send指令都完成，
+    // 然后发送一个FIN标志出去，之后进入CLOSING状态。
+    
+    uint8_t buffer[40];
+    construct_ip_header(buffer, tcp, sizeof(buffer));
+    // tcp
+    TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+    memset(tcp_hdr, 0, 20);
+    tcp_hdr->source = htons(tcp->local_port);
+    tcp_hdr->dest = htons(tcp->remote_port);
+    tcp_hdr->seq = htonl(tcp->snd_nxt);
+    // flags
+    tcp_hdr->doff = 32 / 4; // 32 bytes
+    tcp_hdr->fin = 1;
+    // window size
+    tcp_hdr->window = htons(tcp->recv.free_bytes());
+    
+    // FIN is a segment
+    tcp->snd_nxt += 1;
+
+    update_tcp_ip_checksum(buffer);
+    send_packet(buffer, sizeof(buffer));
+
+    // UNIMPLEMENTED();
     tcp->set_state(TCPState::LAST_ACK);
   }
 }
