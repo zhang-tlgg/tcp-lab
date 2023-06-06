@@ -1,0 +1,8 @@
+*.o
+*.pcap
+*.html
+
+__pycache__/
+builddir/
+.vscode/
+.idea/
