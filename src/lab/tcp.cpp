@@ -433,6 +433,7 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
             // "In addition to the processing for the ESTABLISHED state, if
             // our FIN is now acknowledged then enter FIN-WAIT-2 and continue
             // processing in that state."
+            tcp->set_state(TCPState::FIN_WAIT_2);
           }
 
           // "FIN-WAIT-2 STATE"
@@ -447,6 +448,7 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
             // "The only thing that can arrive in this state is an
             // acknowledgment of our FIN.  If our FIN is now acknowledged,
             // delete the TCB, enter the CLOSED state, and return."
+            tcp->set_state(TCPState::CLOSED);
           }
         }
 
