@@ -225,7 +225,25 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
           // with 4 bytes option(MSS)
           // "a SYN segment sent of the form:
           // <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>"
-          UNIMPLEMENTED()
+          uint8_t buffer[44];
+          construct_ip_header(buffer, new_tcp, sizeof(buffer));
+          // tcp
+          TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+          memset(tcp_hdr, 0, 20);
+          tcp_hdr->source = htons(new_tcp->local_port);
+          tcp_hdr->dest = htons(new_tcp->remote_port);
+          tcp_hdr->seq = htonl(initial_seq);
+          tcp_hdr->ack_seq = htonl(new_tcp->rcv_nxt);
+          // flags
+          tcp_hdr->doff = 24 / 4;
+          tcp_hdr->syn = 1;
+          tcp_hdr->ack = 1;
+          // window size
+          tcp_hdr->window = htons(tcp->recv.free_bytes());
+
+          update_tcp_ip_checksum(buffer);
+          send_packet(buffer, sizeof(buffer));
+          // UNIMPLEMENTED()
 
           // "SND.NXT is set to ISS+1 and SND.UNA to ISS.  The connection
           // state should be changed to SYN-RECEIVED."
