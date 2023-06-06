@@ -936,7 +936,7 @@ void tcp_shutdown(int fd) {
     tcp_hdr->dest = htons(tcp->remote_port);
     tcp_hdr->seq = htonl(tcp->snd_nxt);
     // flags
-    tcp_hdr->doff = 32 / 4; // 32 bytes
+    tcp_hdr->doff = 20 / 4; // 32 bytes
     tcp_hdr->fin = 1;
     // window size
     tcp_hdr->window = htons(tcp->recv.free_bytes());
