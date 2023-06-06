@@ -87,7 +87,7 @@ struct read_http_response {
       }
       fflush(fp);
 
-      if (read_body_length >= content_length) {
+      if (read_body_length >= content_length && content_length != -1) {
         // done
         close_and_exit fn;
         fn.fd = fd;
