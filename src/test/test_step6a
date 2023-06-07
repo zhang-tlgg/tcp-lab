@@ -1,0 +1,2 @@
+./builddir/lab-server -l s -r c -p lab-server.pcap -R 0.5
+./builddir/lab-client -l c -r s -p lab-client.pcap

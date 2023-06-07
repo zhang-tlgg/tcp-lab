@@ -461,13 +461,49 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
         // "There are four cases for the acceptability test for an incoming
         // segment:"
         bool acceptable = false;
-        UNIMPLEMENTED_WARN();
+        if (seg_len == 0 && tcp->rcv_wnd == 0) {
+          if (seg_seq == tcp->rcv_nxt) {
+            acceptable = true;
+          }
+        } else if (seg_len == 0 && tcp->rcv_wnd > 0) {
+          if (tcp_seq_le(tcp->rcv_nxt, seg_seq) && 
+              tcp_seq_lt(seg_seq, tcp->rcv_nxt + tcp->rcv_wnd)) {
+            acceptable = true;
+          }
+        } else if (seg_len > 0 && tcp->rcv_wnd > 0) {
+          if ((tcp_seq_le(tcp->rcv_nxt, seg_seq) && tcp_seq_lt(seg_seq, tcp->rcv_nxt + tcp->rcv_wnd)) ||
+              (tcp_seq_le(tcp->rcv_nxt, seg_seq + seg_len - 1) && tcp_seq_lt(seg_seq + seg_len - 1, tcp->rcv_nxt + tcp->rcv_wnd))) {
+            acceptable = true;
+          }
+        } 
+        // UNIMPLEMENTED_WARN();
 
         // "If an incoming segment is not acceptable, an acknowledgment
         // should be sent in reply (unless the RST bit is set, if so drop
         // the segment and return):"
         if (!acceptable) {
-          UNIMPLEMENTED_WARN();
+          if (!tcp_header->rst) {
+            // <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+            uint8_t buffer[40];
+            construct_ip_header(buffer, tcp, sizeof(buffer));
+            // tcp
+            TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+            memset(tcp_hdr, 0, 20);
+            tcp_hdr->source = htons(tcp->local_port);
+            tcp_hdr->dest = htons(tcp->remote_port);
+            tcp_hdr->seq = htonl(tcp->snd_nxt);
+            tcp_hdr->ack_seq = htonl(tcp->rcv_nxt);
+            // flags
+            tcp_hdr->doff = 20 / 4;
+            tcp_hdr->ack = 1;
+            // window size
+            tcp_hdr->window = htons(tcp->recv.free_bytes());
+            
+            update_tcp_ip_checksum(buffer);
+            send_packet(buffer, sizeof(buffer));
+            return;
+          }
+          // UNIMPLEMENTED_WARN();
         }
 
         // "second check the RST bit,"
