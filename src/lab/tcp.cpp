@@ -8,6 +8,23 @@
 // mapping from fd to TCP connection
 std::map<int, TCP *> tcp_fds;
 
+// timers
+// retransmission timer
+struct Retransmission {
+  int fd;
+  size_t operator()() {
+    printf("|* Retransmission *|\n");
+    TCP *tcp = tcp_fds[fd];
+    assert(tcp);
+    if (tcp->retransmission_queue.empty()) {
+      return -1;
+    } else {
+      tcp->retransmission();
+      return 2000;
+    }
+  }
+};
+
 // some helper functions
 const char *tcp_state_to_string(TCPState state) {
   switch (state) {
@@ -45,6 +62,64 @@ void TCP::set_state(TCPState new_state) {
          tcp_state_to_string(new_state));
   fflush(stdout);
   state = new_state;
+}
+
+// update retransmission queue
+void TCP::push_to_retransmission_queue(const uint8_t *buffer, const size_t header_len, const size_t body_len) {
+  TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+  uint32_t seq = ntohl(tcp_hdr->seq);
+  printf("|* Push Retransmission Queue, seq = %lu *|\n", seq);
+  for (auto seg : retransmission_queue) {
+    TCPHeader *seg_tcp_hdr = (TCPHeader *)&seg.buffer[20];
+    uint32_t seg_seq = ntohl(seg_tcp_hdr->seq);
+    if (seg_seq == seq) {
+      printf("|* Already in Retransmission Queue *|\n");
+      return;
+    }
+  }
+  printf("|* Push Packet *|\n");
+  Segment new_seg = Segment(buffer, header_len, body_len, current_ts_msec());
+  retransmission_queue.push_back(new_seg);
+  printf("retransmission queue size = %lu\n", retransmission_queue.size());
+}
+
+void TCP::pop_from_retransmission_queue(const uint32_t seg_ack) {
+  printf("|* Pop Retransmission Queue *|\n");
+  ssize_t index = -1;
+  for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
+    auto& seg = retransmission_queue[i];
+    TCPHeader *tcp_hdr = (TCPHeader *)&seg.buffer[20];
+    uint32_t seg_seq = ntohl(tcp_hdr->seq);
+    // match packet
+    if (0 < seg.body_len) {
+      if (seg_seq + seg.body_len == seg_ack) {
+        index = i;
+        break;
+      }
+    } else {
+      if (seg_seq + 1 == seg_ack) {
+        index = i;
+        break;
+      }
+    }
+  }
+  // new ACK
+  if (index != -1) {
+    printf("|* Pop Packet *|\n");
+    retransmission_queue.erase(retransmission_queue.begin(), retransmission_queue.begin() + index + 1);
+  }
+  printf("retransmission queue size = %lu\n", retransmission_queue.size());
+}
+
+void TCP::retransmission() {
+  uint64_t current_ms = current_ts_msec();
+  // printf("current_ms = %llu\n", current_ms);
+  for (auto seg : retransmission_queue) {
+    // printf("start_ms = %llu\n", seg.start_ms);
+    if (RTO + seg.start_ms < current_ms) {
+      send_packet(seg.buffer, seg.header_len + seg.body_len);
+    }
+  }
 }
 
 // construct ip header from tcp connection
@@ -243,6 +318,15 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
 
           update_tcp_ip_checksum(buffer);
           send_packet(buffer, sizeof(buffer));
+          
+          // update full ack
+          // tcp->update_recovery_ack();
+          // add to retransmission queue
+          tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
+          // start retransmission timer
+          Retransmission retransmission_fn;
+          retransmission_fn.fd = new_fd;
+          TIMERS.add_job(retransmission_fn, current_ts_msec());
           // UNIMPLEMENTED()
 
           // "SND.NXT is set to ISS+1 and SND.UNA to ISS.  The connection
@@ -263,6 +347,9 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
         // "If the state is SYN-SENT then"
         // "If the ACK bit is set"
         if (tcp_header->ack) {
+          // pop from retransmission queue
+          tcp->pop_from_retransmission_queue(seg_ack);
+
           // "If SEG.ACK =< ISS, or SEG.ACK > SND.NXT, send a reset (unless
           // the RST bit is set, if so drop the segment and return)
           //<SEQ=SEG.ACK><CTL=RST>
@@ -393,6 +480,9 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
 
         // "fifth check the ACK field,"
         if (tcp_header->ack) {
+          // pop from retransmission queue
+          tcp->pop_from_retransmission_queue(seg_ack);
+          
           // "if the ACK bit is on"
           // "SYN-RECEIVED STATE"
           if (tcp->state == SYN_RCVD) {
@@ -801,6 +891,15 @@ void tcp_connect(int fd, uint32_t dst_addr, uint16_t dst_port) {
 
   update_tcp_ip_checksum(buffer);
   send_packet(buffer, sizeof(buffer));
+  
+  // update full ack
+  // tcp->update_recovery_ack();
+  // push to retransmission queue
+  tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
+  // start retransmission timer
+  Retransmission retransmission_fn;
+  retransmission_fn.fd = fd;
+  TIMERS.add_job(retransmission_fn, current_ts_msec());
   return;
 }
 
@@ -869,6 +968,15 @@ ssize_t tcp_write(int fd, const uint8_t *data, size_t size) {
 
         update_tcp_ip_checksum(buffer);
         send_packet(buffer, total_length);
+
+        // update full ack
+        // tcp->update_recovery_ack();
+        // push to retransmission queue
+        tcp->push_to_retransmission_queue(buffer, 52, segment_len);
+        // start retransmission timer
+        Retransmission retransmission_fn;
+        retransmission_fn.fd = fd;
+        TIMERS.add_job(retransmission_fn, current_ts_msec());
       }
     }
     return res;
@@ -919,6 +1027,15 @@ void tcp_shutdown(int fd) {
     update_tcp_ip_checksum(buffer);
     send_packet(buffer, sizeof(buffer));
 
+    // update full ack
+    // tcp->update_recovery_ack();
+    // push to retransmission queue
+    tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
+    // start retransmission timer
+    Retransmission retransmission_fn;
+    retransmission_fn.fd = fd;
+    TIMERS.add_job(retransmission_fn, current_ts_msec());
+
     // UNIMPLEMENTED();
     tcp->set_state(TCPState::FIN_WAIT_1);
   } else if (tcp->state == TCPState::CLOSE_WAIT) {
@@ -948,6 +1065,15 @@ void tcp_shutdown(int fd) {
 
     update_tcp_ip_checksum(buffer);
     send_packet(buffer, sizeof(buffer));
+
+    // update full ack
+    // tcp->update_recovery_ack();
+    // push to retransmission queue
+    tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
+    // start retransmission timer
+    Retransmission retransmission_fn;
+    retransmission_fn.fd = fd;
+    TIMERS.add_job(retransmission_fn, current_ts_msec());
 
     // UNIMPLEMENTED();
     tcp->set_state(TCPState::LAST_ACK);

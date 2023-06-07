@@ -13,6 +13,23 @@
 // default MSS is MTU - 20 - 20 for TCP over IPv4
 #define DEFAULT_MSS (MTU - 20 - 20)
 
+struct Segment {
+  size_t header_len; // segment header length
+  size_t body_len; // segment body length
+  uint8_t buffer[MTU]; // segment data (< MTU bytes)
+  uint64_t start_ms; // the time when segment push to the retransmission queue
+  size_t dup_ack_cnt; // the duplicate ACK count for later Reno's impl
+
+  Segment() { header_len = body_len = dup_ack_cnt = 0; start_ms = 0; }
+  Segment(const uint8_t *_buffer, const size_t _header_len, const size_t _body_len, const uint64_t _start_ms) {
+    header_len = _header_len;
+    body_len = _body_len;
+    memcpy(buffer, _buffer, _header_len + _body_len);
+    start_ms = _start_ms;
+    dup_ack_cnt = 0;
+  }
+};
+
 // taken from linux source include/uapi/linux/tcp.h
 // RFC793 Page 15
 struct TCPHeader {
@@ -68,6 +85,8 @@ enum TCPState {
 const size_t RECV_BUFF_SIZE = 10240;
 const size_t SEND_BUFF_SIZE = 10240;
 
+const uint64_t RTO = 200; // ms
+
 // Transmission Control Block
 // rfc793 Page 10 Section 3.2
 struct TCP {
@@ -113,6 +132,9 @@ struct TCP {
   // pending accept queue
   std::deque<int> accept_queue;
 
+  // retransmission queue
+  std::vector<Segment> retransmission_queue;
+
   // slow start and congestion avoidance
   uint32_t cwnd;
   uint32_t ssthresh;
@@ -121,6 +143,14 @@ struct TCP {
 
   // state transition with debug output
   void set_state(TCPState new_state);
+
+  // update retransmission queue
+  void push_to_retransmission_queue(const uint8_t *buffer, const size_t header_len, const size_t body_len);
+
+  void pop_from_retransmission_queue(const uint32_t seg_ack);
+
+  // handle retransmission queue
+  void retransmission();
 };
 
 extern std::vector<TCP *> tcp_connections;
