@@ -30,6 +30,19 @@ struct Segment {
   }
 };
 
+struct Payload {
+  uint32_t seg_seq; // sequence number of payload
+  size_t len; // length of payload
+  uint8_t data[MTU]; // payload data
+
+  Payload() { seg_seq = 0; len =  0; }
+  Payload(const uint8_t *_data, const size_t _len, const uint32_t _seg_seq) {
+    seg_seq = _seg_seq;
+    len = _len;
+    memcpy(data, _data, _len);
+  }
+};
+
 // taken from linux source include/uapi/linux/tcp.h
 // RFC793 Page 15
 struct TCPHeader {
@@ -135,6 +148,9 @@ struct TCP {
   // retransmission queue
   std::vector<Segment> retransmission_queue;
 
+  // out_of_order queue
+  std::vector<Payload> out_of_order_queue;
+
   // slow start and congestion avoidance
   uint32_t cwnd;
   uint32_t ssthresh;
@@ -151,6 +167,12 @@ struct TCP {
 
   // handle retransmission queue
   void retransmission();
+
+  // update out_of_order queue
+  void push_to_out_of_order_queue(const uint8_t *data, const size_t len, const uint32_t seg_seq);
+
+  // handle out_of_order queue
+  void reorder(const uint32_t seg_seq);
 };
 
 extern std::vector<TCP *> tcp_connections;

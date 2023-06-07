@@ -68,23 +68,23 @@ void TCP::set_state(TCPState new_state) {
 void TCP::push_to_retransmission_queue(const uint8_t *buffer, const size_t header_len, const size_t body_len) {
   TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
   uint32_t seq = ntohl(tcp_hdr->seq);
-  printf("|* Push Retransmission Queue, seq = %lu *|\n", seq);
+  // printf("|* Push Retransmission Queue, seq = %lu *|\n", seq);
   for (auto seg : retransmission_queue) {
     TCPHeader *seg_tcp_hdr = (TCPHeader *)&seg.buffer[20];
     uint32_t seg_seq = ntohl(seg_tcp_hdr->seq);
     if (seg_seq == seq) {
-      printf("|* Already in Retransmission Queue *|\n");
+      // printf("|* Already in Retransmission Queue *|\n");
       return;
     }
   }
-  printf("|* Push Packet *|\n");
+  // printf("|* Push Packet *|\n");
   Segment new_seg = Segment(buffer, header_len, body_len, current_ts_msec());
   retransmission_queue.push_back(new_seg);
-  printf("retransmission queue size = %lu\n", retransmission_queue.size());
+  // printf("retransmission queue size = %lu\n", retransmission_queue.size());
 }
 
 void TCP::pop_from_retransmission_queue(const uint32_t seg_ack) {
-  printf("|* Pop Retransmission Queue *|\n");
+  // printf("|* Pop Retransmission Queue *|\n");
   ssize_t index = -1;
   for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
     auto& seg = retransmission_queue[i];
@@ -105,19 +105,47 @@ void TCP::pop_from_retransmission_queue(const uint32_t seg_ack) {
   }
   // new ACK
   if (index != -1) {
-    printf("|* Pop Packet *|\n");
+    // printf("|* Pop Packet *|\n");
     retransmission_queue.erase(retransmission_queue.begin(), retransmission_queue.begin() + index + 1);
   }
-  printf("retransmission queue size = %lu\n", retransmission_queue.size());
+  // printf("retransmission queue size = %lu\n", retransmission_queue.size());
 }
 
 void TCP::retransmission() {
   uint64_t current_ms = current_ts_msec();
-  // printf("current_ms = %llu\n", current_ms);
   for (auto seg : retransmission_queue) {
-    // printf("start_ms = %llu\n", seg.start_ms);
     if (RTO + seg.start_ms < current_ms) {
       send_packet(seg.buffer, seg.header_len + seg.body_len);
+    }
+  }
+}
+
+void TCP::push_to_out_of_order_queue(const uint8_t *data, const size_t len, const uint32_t seg_seq) {
+  printf("|* Push Out of Order Queue *|\n");
+  Payload payload = Payload(data, len, seg_seq);
+  out_of_order_queue.push_back(payload);
+  printf("out_of_order queue size = %lu\n", out_of_order_queue.size());
+}
+
+void TCP::reorder(const uint32_t seg_seq) {
+  printf("|* Reorder *|\n");
+  ssize_t index = -1;
+  for (ssize_t i = 0, iEnd = out_of_order_queue.size(); i < iEnd; i++) {
+    Payload payload = out_of_order_queue[i];
+    if (seg_seq == payload.seg_seq) {
+      size_t res = recv.write(payload.data, payload.len);
+      rcv_nxt = rcv_nxt + res;
+      rcv_wnd = recv.free_bytes();
+      index = i;
+      break;
+    }
+  }
+  if (index != -1) {
+    const uint32_t new_seg_seq = out_of_order_queue[index].seg_seq + out_of_order_queue[index].len;
+    out_of_order_queue.erase(out_of_order_queue.begin() + index);
+    printf("out_of_order queue size = %lu\n", out_of_order_queue.size());
+    if (!out_of_order_queue.empty()) {
+      reorder(new_seg_seq);
     }
   }
 }
@@ -593,9 +621,16 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
             // RCV.NXT and RCV.WND should not be reduced."
             
             // assert(tcp->rcv_nxt <= seg_seq);
-            size_t res = tcp->recv.write(payload, seg_len);
-            tcp->rcv_nxt = tcp->rcv_nxt + res;
-            tcp->rcv_wnd = tcp->recv.free_bytes();
+            if (tcp->rcv_nxt != seg_seq) {
+              tcp->push_to_out_of_order_queue(payload, seg_len, seg_seq);
+            } else {
+              size_t res = tcp->recv.write(payload, seg_len);
+              tcp->rcv_nxt = tcp->rcv_nxt + res;
+              tcp->rcv_wnd = tcp->recv.free_bytes();
+              if (!tcp->out_of_order_queue.empty()) {
+                tcp->reorder(seg_seq + seg_len);
+              }
+            }
             // UNIMPLEMENTED()
 
             // "Send an acknowledgment of the form:

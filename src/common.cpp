@@ -51,6 +51,9 @@ double send_drop_rate = 0.0;
 double send_delay_min = 0.0;
 double send_delay_max = 0.0;
 
+// how many times of out of order situation happens
+int out_of_order_size = 0;
+
 // default congestion control algorithm
 CongestionControlAlgorithm current_cc_algo =
     CongestionControlAlgorithm::Default;
@@ -168,19 +171,43 @@ struct delay_sender {
   }
 };
 
-void send_packet(const uint8_t *data, size_t size) {
-  if (send_delay_max != 0.0) {
-    // simulate transfer latency
-    double time = send_delay_min + ((double)rand() / RAND_MAX) *
-                                       (send_delay_max - send_delay_min);
-    printf("Delay in %.2lf ms\n", time);
+struct Packet {
+  uint8_t data[MTU];
+  size_t size;
 
-    delay_sender fn;
-    fn.data.insert(fn.data.begin(), data, data + size);
-    TIMERS.schedule_job(fn, time);
-  } else {
-    send_packet_internal(data, size);
+  Packet() { size = 0; }
+  Packet(const uint8_t *_data, const size_t _size) {
+    size = _size;
+    memcpy(data, _data, _size);
   }
+};
+std::vector<Packet> packets;
+
+void send_packet(const uint8_t *data, size_t size) {
+    if (send_delay_max != 0.0) {
+        // simulate transfer latency
+        double time = send_delay_min + ((double)rand() / RAND_MAX) *
+            (send_delay_max - send_delay_min);
+        printf("Delay in %.2lf ms\n", time);
+
+        delay_sender fn;
+        fn.data.insert(fn.data.begin(), data, data + size);
+        TIMERS.schedule_job(fn, time);
+    } else {
+        if (0 < out_of_order_size && 44 < size) {
+            packets.push_back(Packet(data, size));
+            out_of_order_size--;
+            if (out_of_order_size == 0) {
+                // Reverse Order
+                for (auto it = packets.rbegin(); it != packets.rend(); it++) {
+                    send_packet_internal(it->data, it->size);
+                }
+                packets.clear();
+            }
+        } else {
+            send_packet_internal(data, size);
+        }
+    }
 }
 
 ssize_t recv_packet(uint8_t *buffer, size_t buffer_size) {
