@@ -186,34 +186,29 @@ void TCP::pop_from_retransmission_queue(const uint32_t seg_ack) {
           printf("congestion avoidance: cwnd = %u ssthresh = %u\n", cwnd, ssthresh); 
         }
       } else {
-        cwnd = ssthresh;
-        set_reno_state(RenoState::CONGESTION_AVOIDANCE);
-        // if (current_cc_algo == CongestionControlAlgorithm::NewReno) {
-        //   assert(seg_ack <= recovery_ack);
-        //   if (seg_ack < recovery_ack) {
-        //     // retransmit next missing packet
-        //     for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
-        //       auto& seg = retransmission_queue[i];
-        //       TCPHeader *tcp_hdr = (TCPHeader *)&seg.buffer[20];
-        //       uint32_t seg_seq = ntohl(tcp_hdr->seq);
-        //       // reset timeout
-        //       seg.start_ms = current_ts_msec();
-        //       if (seg_seq == seg_ack) {
-        //         printf("|* Fast Retransmit Partial ACK *|\n"); 
-        //         send_packet(seg.buffer, seg.header_len + seg.body_len);
-        //         break;
-        //       }
-        //     }
-        //   } else {
-        //     cwnd = ssthresh;
-        //     printf("fast retransmit full rck: cwnd = %u ssthresh = %u\n", cwnd, ssthresh); 
-        //     set_reno_state(RenoState::CONGESTION_AVOIDANCE);
-        //   }
-        // } else {
-        //   cwnd = ssthresh;
-        //   printf("fast retransmit: cwnd = %u ssthresh = %u\n", cwnd, ssthresh); 
-        //   set_reno_state(RenoState::CONGESTION_AVOIDANCE);
-        // }
+        // cwnd = ssthresh;
+        // printf("fast retransmit: cwnd = %u ssthresh = %u\n", cwnd, ssthresh); 
+        // set_reno_state(RenoState::CONGESTION_AVOIDANCE);
+        assert(seg_ack <= recovery_ack);
+        if (seg_ack < recovery_ack) {
+          // retransmit next missing packet
+          for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
+            auto& seg = retransmission_queue[i];
+            TCPHeader *tcp_hdr = (TCPHeader *)&seg.buffer[20];
+            uint32_t seg_seq = ntohl(tcp_hdr->seq);
+            // reset timeout
+            seg.start_ms = current_ts_msec();
+            if (seg_seq == seg_ack) {
+              printf("|* Fast Retransmit Partial ACK *|\n"); 
+              send_packet(seg.buffer, seg.header_len + seg.body_len);
+              break;
+            }
+          }
+        } else {
+          cwnd = ssthresh;
+          printf("fast retransmit full rck: cwnd = %u ssthresh = %u\n", cwnd, ssthresh); 
+          set_reno_state(RenoState::CONGESTION_AVOIDANCE);
+        }
       }
       // dupACKcount = 0
       clear_dup_ack_cnt();
@@ -243,6 +238,13 @@ inline void TCP::clear_dup_ack_cnt() {
   for (auto seg : retransmission_queue) {
     seg.dup_ack_cnt = 0;
   }
+}
+
+inline void TCP::update_recovery_ack() {
+  if (recovery_ack < snd_nxt) {
+    recovery_ack = snd_nxt;
+  }
+  printf("recovery_ack = %u\n", recovery_ack);
 }
 
 void TCP::push_to_out_of_order_queue(const uint8_t *data, const size_t len, const uint32_t seg_seq) {
@@ -518,7 +520,7 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
           send_packet(buffer, sizeof(buffer));
           
           // update full ack
-          // tcp->update_recovery_ack();
+          tcp->update_recovery_ack();
           // add to retransmission queue
           tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
           // start retransmission timer
@@ -1134,7 +1136,7 @@ void tcp_connect(int fd, uint32_t dst_addr, uint16_t dst_port) {
   send_packet(buffer, sizeof(buffer));
   
   // update full ack
-  // tcp->update_recovery_ack();
+  tcp->update_recovery_ack();
   // push to retransmission queue
   tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
   // start retransmission timer
@@ -1237,7 +1239,7 @@ ssize_t tcp_write(int fd, const uint8_t *data, size_t size) {
           send_packet(buffer, total_length);
 
           // update full ack
-          // tcp->update_recovery_ack();
+          tcp->update_recovery_ack();
           // push to retransmission queue
           tcp->push_to_retransmission_queue(buffer, 52, segment_len);
           // start retransmission timer
@@ -1296,7 +1298,7 @@ void tcp_shutdown(int fd) {
     send_packet(buffer, sizeof(buffer));
 
     // update full ack
-    // tcp->update_recovery_ack();
+    tcp->update_recovery_ack();
     // push to retransmission queue
     tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
     // start retransmission timer
@@ -1335,7 +1337,7 @@ void tcp_shutdown(int fd) {
     send_packet(buffer, sizeof(buffer));
 
     // update full ack
-    // tcp->update_recovery_ack();
+    tcp->update_recovery_ack();
     // push to retransmission queue
     tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
     // start retransmission timer

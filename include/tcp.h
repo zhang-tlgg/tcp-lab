@@ -206,6 +206,9 @@ struct TCP {
 
   // clear dup_ack_cnt
   inline void clear_dup_ack_cnt();
+
+  // update full ack
+  inline void update_recovery_ack();
 };
 
 extern std::vector<TCP *> tcp_connections;
