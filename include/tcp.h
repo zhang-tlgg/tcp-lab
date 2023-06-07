@@ -100,6 +100,8 @@ const size_t SEND_BUFF_SIZE = 10240;
 
 const uint64_t RTO = 200; // ms
 
+const size_t NAGLE_SIZE = 40;
+
 // Transmission Control Block
 // rfc793 Page 10 Section 3.2
 struct TCP {
@@ -151,11 +153,19 @@ struct TCP {
   // out_of_order queue
   std::vector<Payload> out_of_order_queue;
 
+  // nagle buffer
+  size_t nagle_buffer_size;
+  uint8_t nagle_buffer[MTU];
+
+  // timer
+  // nagle timer
+  uint64_t nagle_timer;
+
   // slow start and congestion avoidance
   uint32_t cwnd;
   uint32_t ssthresh;
 
-  TCP() { state = TCPState::CLOSED; }
+  TCP() { state = TCPState::CLOSED; nagle_buffer_size = 0; }
 
   // state transition with debug output
   void set_state(TCPState new_state);
@@ -173,6 +183,9 @@ struct TCP {
 
   // handle out_of_order queue
   void reorder(const uint32_t seg_seq);
+
+  // clear nagle buffer
+  void clear_nagle_buffer();
 };
 
 extern std::vector<TCP *> tcp_connections;

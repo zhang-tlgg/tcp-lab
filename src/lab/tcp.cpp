@@ -24,6 +24,24 @@ struct Retransmission {
     }
   }
 };
+// nagle timer 
+struct Nagle {
+  int fd;
+  size_t operator()() {
+    // printf("|* Nagle *|\n");
+    TCP *tcp = tcp_fds[fd];
+    assert(tcp);
+
+    if (tcp->nagle_buffer_size != 0) {
+        if (2 * RTO < current_ts_msec() - tcp->nagle_timer) {
+          tcp->clear_nagle_buffer();
+          return -1;
+        } else {
+          return 1000;
+        }
+    }
+  }
+};
 
 // some helper functions
 const char *tcp_state_to_string(TCPState state) {
@@ -170,6 +188,60 @@ void update_tcp_ip_checksum(uint8_t *buffer) {
   TCPHeader *tcp_hdr = (TCPHeader *)(buffer + ip_hdr->ip_hl * 4);
   update_tcp_checksum(ip_hdr, tcp_hdr);
   update_ip_checksum(ip_hdr);
+}
+
+void TCP::clear_nagle_buffer() {
+  printf("|* Nagle Clear *|\n");
+  size_t segment_len = nagle_buffer_size;
+  // size_t segment_len = min(nagle_buffer_size, remote_mss);
+  // printf("nagle_buffer_size: %zu\n", nagle_buffer_size);
+  // printf("remote_mss: %u\n", remote_mss);
+  // printf("segment_len: %zu\n", segment_len);
+  if (segment_len > 0) {
+    printf("Sending segment of len %zu to remote\n", segment_len);
+    // send data now
+
+    // 20 IP header & 20 TCP header
+    uint16_t total_length = 20 + 20 + segment_len;
+    uint8_t buffer[MTU];
+    construct_ip_header(buffer, this, total_length);
+    // tcp
+    TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+    memset(tcp_hdr, 0, 20);
+    tcp_hdr->source = htons(local_port);
+    tcp_hdr->dest = htons(remote_port);
+    // this segment occupies range:
+    // [snd_nxt, snd_nxt+seg_len)
+    tcp_hdr->seq = htonl(snd_nxt);
+    snd_nxt += segment_len;
+    // flags
+    tcp_hdr->doff = 20 / 4; // 32 bytes
+
+    // set ack bit and ack_seq
+    tcp_hdr->ack = 1;
+    tcp_hdr->ack_seq = htonl(rcv_nxt);
+
+    // window size: size of empty bytes in recv buffer
+    tcp_hdr->window = htons(recv.free_bytes());
+
+    // payload
+    memcpy(&buffer[40], nagle_buffer, segment_len);
+    // clear nagle buffer
+    memset(nagle_buffer, 0, segment_len);
+    nagle_buffer_size = 0;
+
+    update_tcp_ip_checksum(buffer);
+    send_packet(buffer, total_length);
+
+    // update full ack
+    // update_recovery_ack();
+    // push to retransmission queue
+    push_to_retransmission_queue(buffer, 40, segment_len);
+    // start retransmission timer
+    Retransmission retransmission_fn;
+    retransmission_fn.fd = fd;
+    TIMERS.add_job(retransmission_fn, current_ts_msec());
+  }
 }
 
 uint32_t generate_initial_seq() {
@@ -991,63 +1063,90 @@ ssize_t tcp_write(int fd, const uint8_t *data, size_t size) {
     // send data to remote
     size_t bytes_to_send = tcp->send.size;
 
-    // TODO(step 3: send & receive)
-    // consider mss and send sequence space
-    // send sequence space: https://www.rfc-editor.org/rfc/rfc793.html#page-20 figure 4
-    // compute the segment length to send
+    // nagle's algorithm
+    if (bytes_to_send < NAGLE_SIZE) {
+      printf("|* Enter Nagle *|\n");
+      printf("bytes_to_send: %zu\n", bytes_to_send);
+      // write to nagle buffer
+      tcp->nagle_timer = current_ts_msec();
+      // payload
+      size_t bytes_read = tcp->send.read(&tcp->nagle_buffer[tcp->nagle_buffer_size], bytes_to_send);
+      // should never fail
+      assert(bytes_read == bytes_to_send);
+      tcp->nagle_buffer_size += bytes_read;
+      printf("nagle_buffer_size: %zu\n", tcp->nagle_buffer_size);
 
-    while (bytes_to_send){
-      size_t segment_len = min(bytes_to_send, tcp->remote_mss);
-      bytes_to_send -= segment_len;
-      // UNIMPLEMENTED()
+      Nagle nagle_fn;
+      nagle_fn.fd = fd;
+      TIMERS.add_job(nagle_fn, current_ts_msec());
 
-      if (segment_len > 0) {
-        printf("Sending segment of len %zu to remote\n", segment_len);
-        // send data now
+      // check if nagle buffer is time out or big enough
+      // if (tcp->retransmission_queue.empty() || 40 < tcp->nagle_buffer_size) {
+      if (NAGLE_SIZE < tcp->nagle_buffer_size) {
+          tcp->clear_nagle_buffer();
+      } else {
+        printf("|* Nagle Saved %zu *|\n", tcp->nagle_buffer_size);
+      }
+    } 
+    else {
+      // TODO(step 3: send & receive)
+      // consider mss and send sequence space
+      // send sequence space: https://www.rfc-editor.org/rfc/rfc793.html#page-20 figure 4
+      // compute the segment length to send
 
-        // 20 IP header & 20 TCP header
-        uint16_t total_length = 20 + 20 + segment_len;
-        uint8_t buffer[MTU];
-        construct_ip_header(buffer, tcp, total_length);
+      while (bytes_to_send){
+        size_t segment_len = min(bytes_to_send, tcp->remote_mss);
+        bytes_to_send -= segment_len;
+        // UNIMPLEMENTED()
 
-        // tcp
-        TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
-        memset(tcp_hdr, 0, 20);
-        tcp_hdr->source = htons(tcp->local_port);
-        tcp_hdr->dest = htons(tcp->remote_port);
-        // this segment occupies range:
-        // [snd_nxt, snd_nxt+seg_len)
-        tcp_hdr->seq = htonl(tcp->snd_nxt);
-        tcp->snd_nxt += segment_len;
-        // flags
-        tcp_hdr->doff = 20 / 4; // 20 bytes
+        if (segment_len > 0) {
+          printf("Sending segment of len %zu to remote\n", segment_len);
+          // send data now
 
-        // TODO(step 3: send & receive)
-        // set ack bit and ack_seq
-        tcp_hdr->ack = 1;
-        tcp_hdr->ack_seq = htonl(tcp->rcv_nxt);
+          // 20 IP header & 20 TCP header
+          uint16_t total_length = 20 + 20 + segment_len;
+          uint8_t buffer[MTU];
+          construct_ip_header(buffer, tcp, total_length);
 
-        // TODO(step 3: send & receive)
-        // window size: size of empty bytes in recv buffer
-        tcp_hdr->window = htons(tcp->recv.free_bytes());
-        // UNIMPLEMENTED();
+          // tcp
+          TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
+          memset(tcp_hdr, 0, 20);
+          tcp_hdr->source = htons(tcp->local_port);
+          tcp_hdr->dest = htons(tcp->remote_port);
+          // this segment occupies range:
+          // [snd_nxt, snd_nxt+seg_len)
+          tcp_hdr->seq = htonl(tcp->snd_nxt);
+          tcp->snd_nxt += segment_len;
+          // flags
+          tcp_hdr->doff = 20 / 4; // 20 bytes
 
-        // payload
-        size_t bytes_read = tcp->send.read(&buffer[40], segment_len);
-        // should never fail
-        assert(bytes_read == segment_len);
+          // TODO(step 3: send & receive)
+          // set ack bit and ack_seq
+          tcp_hdr->ack = 1;
+          tcp_hdr->ack_seq = htonl(tcp->rcv_nxt);
 
-        update_tcp_ip_checksum(buffer);
-        send_packet(buffer, total_length);
+          // TODO(step 3: send & receive)
+          // window size: size of empty bytes in recv buffer
+          tcp_hdr->window = htons(tcp->recv.free_bytes());
+          // UNIMPLEMENTED();
 
-        // update full ack
-        // tcp->update_recovery_ack();
-        // push to retransmission queue
-        tcp->push_to_retransmission_queue(buffer, 52, segment_len);
-        // start retransmission timer
-        Retransmission retransmission_fn;
-        retransmission_fn.fd = fd;
-        TIMERS.add_job(retransmission_fn, current_ts_msec());
+          // payload
+          size_t bytes_read = tcp->send.read(&buffer[40], segment_len);
+          // should never fail
+          assert(bytes_read == segment_len);
+
+          update_tcp_ip_checksum(buffer);
+          send_packet(buffer, total_length);
+
+          // update full ack
+          // tcp->update_recovery_ack();
+          // push to retransmission queue
+          tcp->push_to_retransmission_queue(buffer, 52, segment_len);
+          // start retransmission timer
+          Retransmission retransmission_fn;
+          retransmission_fn.fd = fd;
+          TIMERS.add_job(retransmission_fn, current_ts_msec());
+        }
       }
     }
     return res;
