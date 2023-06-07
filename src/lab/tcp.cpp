@@ -232,15 +232,6 @@ void TCP::clear_nagle_buffer() {
 
     update_tcp_ip_checksum(buffer);
     send_packet(buffer, total_length);
-
-    // update full ack
-    // update_recovery_ack();
-    // push to retransmission queue
-    push_to_retransmission_queue(buffer, 40, segment_len);
-    // start retransmission timer
-    Retransmission retransmission_fn;
-    retransmission_fn.fd = fd;
-    TIMERS.add_job(retransmission_fn, current_ts_msec());
   }
 }
 
