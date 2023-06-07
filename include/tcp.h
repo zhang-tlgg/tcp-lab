@@ -95,12 +95,18 @@ enum TCPState {
   CLOSED,
 };
 
+enum RenoState {
+  SLOW_START,
+  CONGESTION_AVOIDANCE,
+  FAST_RECOVERY,
+};
+
 const size_t RECV_BUFF_SIZE = 10240;
 const size_t SEND_BUFF_SIZE = 10240;
 
 const uint64_t RTO = 200; // ms
 
-const size_t NAGLE_SIZE = 40;
+const size_t NAGLE_SIZE = 0;
 
 // Transmission Control Block
 // rfc793 Page 10 Section 3.2
@@ -161,11 +167,19 @@ struct TCP {
   // nagle timer
   uint64_t nagle_timer;
 
+  // reno state
+  RenoState reno_state;
+
   // slow start and congestion avoidance
   uint32_t cwnd;
   uint32_t ssthresh;
 
-  TCP() { state = TCPState::CLOSED; nagle_buffer_size = 0; }
+  uint32_t delta_cwnd;
+
+  uint32_t recovery_ack;
+
+  TCP() { state = TCPState::CLOSED; reno_state = RenoState::SLOW_START; 
+          nagle_buffer_size = 0; delta_cwnd = 0; }
 
   // state transition with debug output
   void set_state(TCPState new_state);
@@ -186,6 +200,12 @@ struct TCP {
 
   // clear nagle buffer
   void clear_nagle_buffer();
+
+  // state reno state transition with debug output
+  void set_reno_state(RenoState new_state);
+
+  // clear dup_ack_cnt
+  inline void clear_dup_ack_cnt();
 };
 
 extern std::vector<TCP *> tcp_connections;
