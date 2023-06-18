@@ -12,7 +12,7 @@ struct Retransmission_timer {
   int fd;
   size_t operator()() {
     TCP *tcp = tcp_fds[fd];
-    assert(tcp);
+    
     if (tcp->retransmission_queue.empty()) {
       return -1;
     } else {
@@ -22,16 +22,14 @@ struct Retransmission_timer {
   }
 };
 
-struct Nagle {
+struct Nagle_timer {
   int fd;
   size_t operator()() {
-    // printf("|* Nagle *|\n");
     TCP *tcp = tcp_fds[fd];
-    assert(tcp);
 
     if (tcp->nagle_buffer_size != 0) {
-        if (2 * RTO < current_ts_msec() - tcp->nagle_timer) {
-          tcp->clear_nagle_buffer();
+        if (2 * RTO < current_ts_msec() - tcp->nagle_time_last) {
+          tcp->send_nagle_buffer();
           return -1;
         } else {
           return 1000;
@@ -226,20 +224,17 @@ void TCP::update_recovery_ack() {
   printf("recovery_ack = %u\n", recovery_ack);
 }
 
-void TCP::push_to_out_of_order_queue(const uint8_t *data, const size_t len, const uint32_t seg_seq) {
-  printf("|* Push Out of Order Queue *|\n");
-  Payload payload = Payload(data, len, seg_seq);
-  out_of_order_queue.push_back(payload);
-  printf("out_of_order queue size = %lu\n", out_of_order_queue.size());
+void TCP::push_order_list(const uint8_t *data, const size_t len, const uint32_t seg_seq) {
+  OrderSegment ordersegment = OrderSegment(data, len, seg_seq);
+  order_list.push_back(ordersegment);
 }
 
-void TCP::reorder(const uint32_t seg_seq) {
-  printf("|* Reorder *|\n");
+void TCP::check_order(const uint32_t seg_seq) {
   ssize_t index = -1;
-  for (ssize_t i = 0, iEnd = out_of_order_queue.size(); i < iEnd; i++) {
-    Payload payload = out_of_order_queue[i];
-    if (seg_seq == payload.seg_seq) {
-      size_t res = recv.write(payload.data, payload.len);
+  for (ssize_t i = 0, iEnd = order_list.size(); i < iEnd; i++) {
+    OrderSegment ordersegment = order_list[i];
+    if (seg_seq == ordersegment.seg_seq) {
+      size_t res = recv.write(ordersegment.data, ordersegment.len);
       rcv_nxt = rcv_nxt + res;
       rcv_wnd = recv.free_bytes();
       index = i;
@@ -247,11 +242,10 @@ void TCP::reorder(const uint32_t seg_seq) {
     }
   }
   if (index != -1) {
-    const uint32_t new_seg_seq = out_of_order_queue[index].seg_seq + out_of_order_queue[index].len;
-    out_of_order_queue.erase(out_of_order_queue.begin() + index);
-    printf("out_of_order queue size = %lu\n", out_of_order_queue.size());
-    if (!out_of_order_queue.empty()) {
-      reorder(new_seg_seq);
+    const uint32_t new_seg_seq = order_list[index].seg_seq + order_list[index].len;
+    order_list.erase(order_list.begin() + index);
+    if (!order_list.empty()) {
+      check_order(new_seg_seq);
     }
   }
 }
@@ -278,18 +272,9 @@ void update_tcp_ip_checksum(uint8_t *buffer) {
   update_ip_checksum(ip_hdr);
 }
 
-void TCP::clear_nagle_buffer() {
-  printf("|* Nagle Clear *|\n");
+void TCP::send_nagle_buffer() {
   size_t segment_len = nagle_buffer_size;
-  // size_t segment_len = min(nagle_buffer_size, remote_mss);
-  // printf("nagle_buffer_size: %zu\n", nagle_buffer_size);
-  // printf("remote_mss: %u\n", remote_mss);
-  // printf("segment_len: %zu\n", segment_len);
   if (segment_len > 0) {
-    printf("Sending segment of len %zu to remote\n", segment_len);
-    // send data now
-
-    // 20 IP header & 20 TCP header
     uint16_t total_length = 20 + 20 + segment_len;
     uint8_t buffer[MTU];
     construct_ip_header(buffer, this, total_length);
@@ -298,23 +283,17 @@ void TCP::clear_nagle_buffer() {
     memset(tcp_hdr, 0, 20);
     tcp_hdr->source = htons(local_port);
     tcp_hdr->dest = htons(remote_port);
-    // this segment occupies range:
-    // [snd_nxt, snd_nxt+seg_len)
     tcp_hdr->seq = htonl(snd_nxt);
     snd_nxt += segment_len;
     // flags
-    tcp_hdr->doff = 20 / 4; // 32 bytes
+    tcp_hdr->doff = 20 / 4; // 20 bytes
 
-    // set ack bit and ack_seq
     tcp_hdr->ack = 1;
     tcp_hdr->ack_seq = htonl(rcv_nxt);
 
-    // window size: size of empty bytes in recv buffer
     tcp_hdr->window = htons(recv.free_bytes());
 
-    // payload
     memcpy(&buffer[40], nagle_buffer, segment_len);
-    // clear nagle buffer
     memset(nagle_buffer, 0, segment_len);
     nagle_buffer_size = 0;
 
@@ -347,9 +326,9 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
   uint32_t seg_ack = ntohl(tcp_header->ack_seq);
   // SEG.WND
   uint16_t seg_wnd = ntohs(tcp_header->window);
-  // segment(payload) length
+  // segment(ordersegment) length
   uint32_t seg_len = ntohs(ip->ip_len) - ip->ip_hl * 4 - tcp_header->doff * 4;
-  const uint8_t *payload = data + tcp_header->doff * 4;
+  const uint8_t *ordersegment = data + tcp_header->doff * 4;
 
   // iterate tcp connections in two pass
   // first pass: only exact matches
@@ -770,13 +749,13 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
             
             // assert(tcp->rcv_nxt <= seg_seq);
             if (tcp->rcv_nxt != seg_seq) {
-              tcp->push_to_out_of_order_queue(payload, seg_len, seg_seq);
+              tcp->push_order_list(ordersegment, seg_len, seg_seq);
             } else {
-              size_t res = tcp->recv.write(payload, seg_len);
+              size_t res = tcp->recv.write(ordersegment, seg_len);
               tcp->rcv_nxt = tcp->rcv_nxt + res;
               tcp->rcv_wnd = tcp->recv.free_bytes();
-              if (!tcp->out_of_order_queue.empty()) {
-                tcp->reorder(seg_seq + seg_len);
+              if (!tcp->order_list.empty()) {
+                tcp->check_order(seg_seq + seg_len);
               }
             }
             // UNIMPLEMENTED()
@@ -935,7 +914,7 @@ void update_tcp_checksum(const IPHeader *ip, TCPHeader *tcp) {
   pseudo_header[8] = 0;
   // proto tcp
   pseudo_header[9] = 6;
-  // TCP length (header + payload)
+  // TCP length (header + ordersegment)
   be16_t tcp_len = htons(ntohs(ip->ip_len) - ip->ip_hl * 4);
   memcpy(&pseudo_header[10], &tcp_len, 2);
   for (int i = 0; i < 6; i++) {
@@ -953,14 +932,14 @@ void update_tcp_checksum(const IPHeader *ip, TCPHeader *tcp) {
     checksum += (((uint32_t)tcp_data[i * 2]) << 8) + tcp_data[i * 2 + 1];
   }
 
-  // TCP payload
-  uint8_t *payload = tcp_data + tcp->doff * 4;
-  int payload_len = ntohs(ip->ip_len) - ip->ip_hl * 4 - tcp->doff * 4;
-  for (int i = 0; i < payload_len; i++) {
+  // TCP ordersegment
+  uint8_t *ordersegment = tcp_data + tcp->doff * 4;
+  int ordersegment_len = ntohs(ip->ip_len) - ip->ip_hl * 4 - tcp->doff * 4;
+  for (int i = 0; i < ordersegment_len; i++) {
     if ((i % 2) == 0) {
-      checksum += (((uint32_t)payload[i]) << 8);
+      checksum += (((uint32_t)ordersegment[i]) << 8);
     } else {
-      checksum += payload[i];
+      checksum += ordersegment[i];
     }
   }
 
@@ -987,7 +966,7 @@ bool verify_tcp_checksum(const IPHeader *ip, const TCPHeader *tcp) {
   pseudo_header[8] = 0;
   // proto tcp
   pseudo_header[9] = 6;
-  // TCP length (header + payload)
+  // TCP length (header + ordersegment)
   be16_t tcp_len = htons(ntohs(ip->ip_len) - ip->ip_hl * 4);
   memcpy(&pseudo_header[10], &tcp_len, 2);
   for (int i = 0; i < 6; i++) {
@@ -1004,14 +983,14 @@ bool verify_tcp_checksum(const IPHeader *ip, const TCPHeader *tcp) {
     checksum += (((uint32_t)tcp_data[i * 2]) << 8) + tcp_data[i * 2 + 1];
   }
 
-  // TCP payload
-  uint8_t *payload = tcp_data + tcp->doff * 4;
-  int payload_len = ntohs(ip->ip_len) - ip->ip_hl * 4 - tcp->doff * 4;
-  for (int i = 0; i < payload_len; i++) {
+  // TCP ordersegment
+  uint8_t *ordersegment = tcp_data + tcp->doff * 4;
+  int ordersegment_len = ntohs(ip->ip_len) - ip->ip_hl * 4 - tcp->doff * 4;
+  for (int i = 0; i < ordersegment_len; i++) {
     if ((i % 2) == 0) {
-      checksum += (((uint32_t)payload[i]) << 8);
+      checksum += (((uint32_t)ordersegment[i]) << 8);
     } else {
-      checksum += payload[i];
+      checksum += ordersegment[i];
     }
   }
 
@@ -1139,29 +1118,20 @@ ssize_t tcp_write(int fd, const uint8_t *data, size_t size) {
     // send data to remote
     size_t bytes_to_send = tcp->send.size;
 
-    // nagle's algorithm
-    if (bytes_to_send < NAGLE_SIZE) {
-      printf("|* Enter Nagle *|\n");
+    // nagle 算法
+    if (bytes_to_send < NAGLE_MIN_SIZE) {
       printf("bytes_to_send: %zu\n", bytes_to_send);
-      // write to nagle buffer
-      tcp->nagle_timer = current_ts_msec();
-      // payload
+      tcp->nagle_time_last = current_ts_msec();
       size_t bytes_read = tcp->send.read(&tcp->nagle_buffer[tcp->nagle_buffer_size], bytes_to_send);
-      // should never fail
-      assert(bytes_read == bytes_to_send);
       tcp->nagle_buffer_size += bytes_read;
-      printf("nagle_buffer_size: %zu\n", tcp->nagle_buffer_size);
-
-      Nagle nagle_fn;
+      
+      Nagle_timer nagle_fn;
       nagle_fn.fd = fd;
       TIMERS.add_job(nagle_fn, current_ts_msec());
 
-      // check if nagle buffer is time out or big enough
-      // if (tcp->retransmission_queue.empty() || 40 < tcp->nagle_buffer_size) {
-      if (NAGLE_SIZE < tcp->nagle_buffer_size) {
-          tcp->clear_nagle_buffer();
-      } else {
-        printf("|* Nagle Saved %zu *|\n", tcp->nagle_buffer_size);
+      // 足够大或超时
+      if (tcp->nagle_buffer_size > NAGLE_MIN_SIZE) {
+          tcp->send_nagle_buffer();
       }
     } 
     else {
@@ -1206,7 +1176,7 @@ ssize_t tcp_write(int fd, const uint8_t *data, size_t size) {
           tcp_hdr->window = htons(tcp->recv.free_bytes());
           // UNIMPLEMENTED();
 
-          // payload
+          // ordersegment
           size_t bytes_read = tcp->send.read(&buffer[40], segment_len);
           // should never fail
           assert(bytes_read == segment_len);

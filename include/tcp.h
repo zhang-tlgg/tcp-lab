@@ -13,13 +13,13 @@
 // default MSS is MTU - 20 - 20 for TCP over IPv4
 #define DEFAULT_MSS (MTU - 20 - 20)
 
-struct Payload {
-  uint32_t seg_seq; // sequence number of payload
-  size_t len; // length of payload
-  uint8_t data[MTU]; // payload data
+struct OrderSegment {
+  uint32_t seg_seq; // sequence number of ordersegment
+  size_t len; // length of ordersegment
+  uint8_t data[MTU]; // ordersegment data
 
-  Payload() { seg_seq = 0; len =  0; }
-  Payload(const uint8_t *_data, const size_t _len, const uint32_t _seg_seq) {
+  OrderSegment() { seg_seq = 0; len =  0; }
+  OrderSegment(const uint8_t *_data, const size_t _len, const uint32_t _seg_seq) {
     seg_seq = _seg_seq;
     len = _len;
     memcpy(data, _data, _len);
@@ -106,7 +106,7 @@ const uint64_t RTO = 200; // ms
 const size_t SEND_BUFF_SIZE = 10240;
 const size_t RECV_BUFF_SIZE = 10240;
 
-const size_t NAGLE_SIZE = 0;
+const size_t NAGLE_MIN_SIZE = 0;
 
 // Transmission Control Block
 // rfc793 Page 10 Section 3.2
@@ -124,7 +124,7 @@ struct TCP {
   RingBuffer<SEND_BUFF_SIZE> send;
   RingBuffer<RECV_BUFF_SIZE> recv;
 
-  // mss(maximum segment size): maximum of TCP payload(excluding TCP and IP
+  // mss(maximum segment size): maximum of TCP ordersegment(excluding TCP and IP
   // headers). default: 536. max(ipv4): mtu - 20(ipv4) - 20(tcp). max(ipv6): mtu
   // - 40(ipv6) - 20(tcp). only advertised in SYN packet. see rfc6691.
   uint16_t local_mss;
@@ -153,14 +153,14 @@ struct TCP {
   // pending accept queue
   std::deque<int> accept_queue;
 
-  std::vector<Payload> out_of_order_queue;
+  std::vector<OrderSegment> order_list;
 
   std::vector<Segment> retransmission_queue;
 
   uint8_t nagle_buffer[MTU];
   size_t nagle_buffer_size;
 
-  uint64_t nagle_timer;
+  uint64_t nagle_time_last;
 
   RenoState reno_state;
 
@@ -178,7 +178,7 @@ struct TCP {
   // state transition with debug output
   void set_state(TCPState new_state);
 
-  void clear_nagle_buffer();
+  void send_nagle_buffer();
 
   void set_reno_state(RenoState new_state);
 
@@ -188,9 +188,9 @@ struct TCP {
 
   void push_retransmission_queue(const uint8_t *buffer, const size_t header_length, const size_t body_length);
 
-  void reorder(const uint32_t seg_seq);
+  void check_order(const uint32_t seg_seq);
 
-  void push_to_out_of_order_queue(const uint8_t *data, const size_t len, const uint32_t seg_seq);
+  void push_order_list(const uint8_t *data, const size_t len, const uint32_t seg_seq);
 
   void update_recovery_ack();
 
