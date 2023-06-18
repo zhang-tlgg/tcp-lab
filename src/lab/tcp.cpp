@@ -159,6 +159,7 @@ void TCP::check_retransmission_queue(const uint32_t seg_ack) {
     // 快速重传+快速恢复
     else {
       if (seg_ack < recovery_ack) {
+        // 收到部分应答，继续发包
         for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
           auto& seg = retransmission_queue[i];
           TCPHeader *tcp_hdr = (TCPHeader *)&seg.buffer[20];
@@ -170,6 +171,7 @@ void TCP::check_retransmission_queue(const uint32_t seg_ack) {
           }
         }
       } else {
+        // 收到恢复应答，退出快速恢复阶段
         cwnd = ssthresh;
         set_reno_state(RenoState::CONGESTION_AVOIDANCE);
       }
