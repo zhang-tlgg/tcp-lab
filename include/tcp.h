@@ -31,15 +31,15 @@ struct Segment {
   size_t body_length; // segment body length
   uint8_t buffer[MTU]; // segment data (< MTU bytes)
   uint64_t start_time; // the time when segment push to the retransmission queue
-  size_t dup_ack_cnt; // the duplicate ACK count for later Reno's impl
+  size_t repeat_ack; // the duplicate ACK count for later Reno's impl
 
-  Segment() { header_length = body_length = dup_ack_cnt = 0; start_time = 0; }
+  Segment() { header_length = body_length = repeat_ack = 0; start_time = 0; }
   Segment(const uint8_t *_buffer, const size_t _header_length, const size_t _body_length, const uint64_t _start_ms) {
     header_length = _header_length;
     body_length = _body_length;
     memcpy(buffer, _buffer, _header_length + _body_length);
     start_time = _start_ms;
-    dup_ack_cnt = 0;
+    repeat_ack = 0;
   }
 };
 
@@ -194,7 +194,7 @@ struct TCP {
 
   void update_recovery_ack();
 
-  void clear_dup_ack_cnt();
+  void clear_repeat_ack();
 };
 
 extern std::vector<TCP *> tcp_connections;

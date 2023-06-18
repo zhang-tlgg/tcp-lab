@@ -76,24 +76,7 @@ void TCP::set_state(TCPState new_state) {
   state = new_state;
 }
 
-const char *tcp_reno_state_to_string(RenoState state) {
-  switch (state) {
-  case RenoState::SLOW_START:
-    return "SLOW_START";
-  case RenoState::CONGESTION_AVOIDANCE:
-    return "CONGESTION_AVOIDANCE";
-  case RenoState::FAST_RECOVERY:
-    return "FAST_RECOVERY";
-  default:
-    printf("Invalid TCPState\n");
-    exit(1);
-  }
-}
-
 void TCP::set_reno_state(RenoState new_state) {
-  // for unit tests
-  printf("TCP Reno state transitioned from %s to %s\n", tcp_reno_state_to_string(reno_state),
-         tcp_reno_state_to_string(new_state));
   fflush(stdout);
   reno_state = new_state;
 }
@@ -122,28 +105,26 @@ void TCP::check_retransmission_queue(const uint32_t seg_ack) {
     auto& seg = retransmission_queue[i];
     TCPHeader *tcp_hdr = (TCPHeader *)&seg.buffer[20];
     uint32_t seg_seq = ntohl(tcp_hdr->seq);
-    // duplicate ACK
+    // 重复的ACK，计算 repeat_ack
     if (seg_seq == seg_ack) {
       if (reno_state == RenoState::SLOW_START ||
           reno_state == RenoState::CONGESTION_AVOIDANCE) {
         // dupACKcount++
-        seg.dup_ack_cnt++;
-        printf("seg_seq = %u seg_dup_ack_cnt = %zu\n", seg_seq, seg.dup_ack_cnt);
-        // when duplicate ACKs count == 3
-        if (seg.dup_ack_cnt == 3) {
+        seg.repeat_ack++;
+        printf("seg_seq = %u seg_repeat_ack = %zu\n", seg_seq, seg.repeat_ack);
+        // 连续收到3个重复的确认报文，进入快速恢复阶段
+        if (seg.repeat_ack == 3) {
           set_reno_state(RenoState::FAST_RECOVERY);
           // ssthresh = cwnd / 2; cwnd = ssthresh + 3 * MSS
           ssthresh = cwnd >> 1;
           cwnd = ssthresh + 3 * DEFAULT_MSS;
-          // retransmit missing segment
           send_packet(seg.buffer, seg.header_length + seg.body_length);
         }
       } else {
-        // cwnd = cwnd + MSS
+        // 快速恢复阶段
         cwnd += DEFAULT_MSS;
       }
     }
-    // match packet
     if (0 < seg.body_length) {
       if (seg_seq + seg.body_length == seg_ack) {
         index = i;
@@ -156,45 +137,44 @@ void TCP::check_retransmission_queue(const uint32_t seg_ack) {
       }
     }
   }
-  // new ACK
+  // 收到新数据的确认
   if (index != -1) {
     retransmission_queue.erase(retransmission_queue.begin(), retransmission_queue.begin() + index + 1);
-    if (state != TCPState::SYN_SENT && state != TCPState::SYN_RCVD) {
-      if (reno_state == RenoState::SLOW_START) {
+    // 慢启动 swnd += MSS
+    if (reno_state == RenoState::SLOW_START) {
+      cwnd += DEFAULT_MSS;
+      // 状态转移
+      if (cwnd == ssthresh) {
+        set_reno_state(RenoState::CONGESTION_AVOIDANCE);
+      }
+    } 
+    // 拥塞避免 cwnd += SMSS * SMSS / cwnd
+    else if (reno_state == RenoState::CONGESTION_AVOIDANCE) {
+      delta_cwnd += DEFAULT_MSS;
+      if (delta_cwnd == cwnd) {
         cwnd += DEFAULT_MSS;
-        printf("slow start: cwnd = %u ssthresh = %u\n", cwnd, ssthresh);
-        if (cwnd == ssthresh) {
-          set_reno_state(RenoState::CONGESTION_AVOIDANCE);
-        }
-      } else if (reno_state == RenoState::CONGESTION_AVOIDANCE) {
-        delta_cwnd += DEFAULT_MSS;
-        if (delta_cwnd == cwnd) {
-          cwnd += DEFAULT_MSS;
-          delta_cwnd = 0;
-          printf("congestion avoidance: cwnd = %u ssthresh = %u\n", cwnd, ssthresh); 
+        delta_cwnd = 0;
+      }
+    } 
+    // 快速重传+快速恢复
+    else {
+      if (seg_ack < recovery_ack) {
+        for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
+          auto& seg = retransmission_queue[i];
+          TCPHeader *tcp_hdr = (TCPHeader *)&seg.buffer[20];
+          uint32_t seg_seq = ntohl(tcp_hdr->seq);
+          seg.start_time = current_ts_msec();
+          if (seg_seq == seg_ack) {
+            send_packet(seg.buffer, seg.header_length + seg.body_length);
+            break;
+          }
         }
       } else {
-        assert(seg_ack <= recovery_ack);
-        if (seg_ack < recovery_ack) {
-          for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
-            auto& seg = retransmission_queue[i];
-            TCPHeader *tcp_hdr = (TCPHeader *)&seg.buffer[20];
-            uint32_t seg_seq = ntohl(tcp_hdr->seq);
-            seg.start_time = current_ts_msec();
-            if (seg_seq == seg_ack) {
-              printf("|* Fast Retransmit Partial ACK *|\n"); 
-              send_packet(seg.buffer, seg.header_length + seg.body_length);
-              break;
-            }
-          }
-        } else {
-          cwnd = ssthresh;
-          printf("fast retransmit full rck: cwnd = %u ssthresh = %u\n", cwnd, ssthresh); 
-          set_reno_state(RenoState::CONGESTION_AVOIDANCE);
-        }
+        cwnd = ssthresh;
+        set_reno_state(RenoState::CONGESTION_AVOIDANCE);
       }
-      clear_dup_ack_cnt();
     }
+    clear_repeat_ack();
   }
 }
 
@@ -202,18 +182,14 @@ void TCP::check_retransmission() {
   uint64_t current_ms = current_ts_msec();
   for (auto seg : retransmission_queue) {
     if (RTO + seg.start_time < current_ms) {
-      set_reno_state(RenoState::SLOW_START);
-      ssthresh = cwnd >> 1;
-      cwnd = DEFAULT_MSS;
-      clear_dup_ack_cnt();
       send_packet(seg.buffer, seg.header_length + seg.body_length);
     }
   }
 }
 
-void TCP::clear_dup_ack_cnt() {
+void TCP::clear_repeat_ack() {
   for (auto seg : retransmission_queue) {
-    seg.dup_ack_cnt = 0;
+    seg.repeat_ack = 0;
   }
 }
 
