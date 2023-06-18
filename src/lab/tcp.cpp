@@ -8,23 +8,21 @@
 // mapping from fd to TCP connection
 std::map<int, TCP *> tcp_fds;
 
-// timers
-// retransmission timer
-struct Retransmission {
+struct Retransmission_timer {
   int fd;
   size_t operator()() {
-    printf("|* Retransmission *|\n");
+    printf("|* Retransmission_timer *|\n");
     TCP *tcp = tcp_fds[fd];
     assert(tcp);
     if (tcp->retransmission_queue.empty()) {
       return -1;
     } else {
-      tcp->retransmission();
+      tcp->check_retransmission();
       return 2000;
     }
   }
 };
-// nagle timer 
+
 struct Nagle {
   int fd;
   size_t operator()() {
@@ -43,7 +41,6 @@ struct Nagle {
   }
 };
 
-// some helper functions
 const char *tcp_state_to_string(TCPState state) {
   switch (state) {
   case TCPState::LISTEN:
@@ -104,27 +101,26 @@ void TCP::set_reno_state(RenoState new_state) {
   reno_state = new_state;
 }
 
-// update retransmission queue
-void TCP::push_to_retransmission_queue(const uint8_t *buffer, const size_t header_len, const size_t body_len) {
+void TCP::push_retransmission_queue(const uint8_t *buffer, const size_t header_length, const size_t body_length) {
   TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
   uint32_t seq = ntohl(tcp_hdr->seq);
-  // printf("|* Push Retransmission Queue, seq = %lu *|\n", seq);
+  // printf("|* Push Retransmission_timer Queue, seq = %lu *|\n", seq);
   for (auto seg : retransmission_queue) {
     TCPHeader *seg_tcp_hdr = (TCPHeader *)&seg.buffer[20];
     uint32_t seg_seq = ntohl(seg_tcp_hdr->seq);
     if (seg_seq == seq) {
-      // printf("|* Already in Retransmission Queue *|\n");
+      // printf("|* Already in Retransmission_timer Queue *|\n");
       return;
     }
   }
   // printf("|* Push Packet *|\n");
-  Segment new_seg = Segment(buffer, header_len, body_len, current_ts_msec());
+  Segment new_seg = Segment(buffer, header_length, body_length, current_ts_msec());
   retransmission_queue.push_back(new_seg);
   // printf("retransmission queue size = %lu\n", retransmission_queue.size());
 }
 
-void TCP::pop_from_retransmission_queue(const uint32_t seg_ack) {
-  // printf("|* Pop Retransmission Queue *|\n");
+void TCP::check_retransmission_queue(const uint32_t seg_ack) {
+  // printf("|* Pop Retransmission_timer Queue *|\n");
   ssize_t index = -1;
   for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
     auto& seg = retransmission_queue[i];
@@ -144,7 +140,7 @@ void TCP::pop_from_retransmission_queue(const uint32_t seg_ack) {
           ssthresh = cwnd >> 1;
           cwnd = ssthresh + 3 * DEFAULT_MSS;
           // retransmit missing segment
-          send_packet(seg.buffer, seg.header_len + seg.body_len);
+          send_packet(seg.buffer, seg.header_length + seg.body_length);
         }
       } else {
         // cwnd = cwnd + MSS
@@ -152,8 +148,8 @@ void TCP::pop_from_retransmission_queue(const uint32_t seg_ack) {
       }
     }
     // match packet
-    if (0 < seg.body_len) {
-      if (seg_seq + seg.body_len == seg_ack) {
+    if (0 < seg.body_length) {
+      if (seg_seq + seg.body_length == seg_ack) {
         index = i;
         break;
       }
@@ -197,10 +193,10 @@ void TCP::pop_from_retransmission_queue(const uint32_t seg_ack) {
             TCPHeader *tcp_hdr = (TCPHeader *)&seg.buffer[20];
             uint32_t seg_seq = ntohl(tcp_hdr->seq);
             // reset timeout
-            seg.start_ms = current_ts_msec();
+            seg.start_time = current_ts_msec();
             if (seg_seq == seg_ack) {
               printf("|* Fast Retransmit Partial ACK *|\n"); 
-              send_packet(seg.buffer, seg.header_len + seg.body_len);
+              send_packet(seg.buffer, seg.header_length + seg.body_length);
               break;
             }
           }
@@ -217,11 +213,11 @@ void TCP::pop_from_retransmission_queue(const uint32_t seg_ack) {
   // printf("retransmission queue size = %lu\n", retransmission_queue.size());
 }
 
-void TCP::retransmission() {
+void TCP::check_retransmission() {
   uint64_t current_ms = current_ts_msec();
   for (auto seg : retransmission_queue) {
-    if (RTO + seg.start_ms < current_ms) {
-      printf("|* Retransmission Packet *|\n");
+    if (RTO + seg.start_time < current_ms) {
+      printf("|* Retransmission_timer Packet *|\n");
       set_reno_state(RenoState::SLOW_START);
       // cwnd = MSS; ssthresh = cwnd / 2;
       ssthresh = cwnd >> 1;
@@ -229,18 +225,18 @@ void TCP::retransmission() {
       // dupACKcount = 0
       clear_dup_ack_cnt();
       // retransmit missing segment
-      send_packet(seg.buffer, seg.header_len + seg.body_len);
+      send_packet(seg.buffer, seg.header_length + seg.body_length);
     }
   }
 }
 
-inline void TCP::clear_dup_ack_cnt() {
+void TCP::clear_dup_ack_cnt() {
   for (auto seg : retransmission_queue) {
     seg.dup_ack_cnt = 0;
   }
 }
 
-inline void TCP::update_recovery_ack() {
+void TCP::update_recovery_ack() {
   if (recovery_ack < snd_nxt) {
     recovery_ack = snd_nxt;
   }
@@ -522,9 +518,9 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
           // update full ack
           tcp->update_recovery_ack();
           // add to retransmission queue
-          tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
+          tcp->push_retransmission_queue(buffer, sizeof(buffer), 0);
           // start retransmission timer
-          Retransmission retransmission_fn;
+          Retransmission_timer retransmission_fn;
           retransmission_fn.fd = new_fd;
           TIMERS.add_job(retransmission_fn, current_ts_msec());
           // UNIMPLEMENTED()
@@ -548,7 +544,7 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
         // "If the ACK bit is set"
         if (tcp_header->ack) {
           // pop from retransmission queue
-          tcp->pop_from_retransmission_queue(seg_ack);
+          tcp->check_retransmission_queue(seg_ack);
 
           // "If SEG.ACK =< ISS, or SEG.ACK > SND.NXT, send a reset (unless
           // the RST bit is set, if so drop the segment and return)
@@ -585,7 +581,7 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
           tcp->irs = seg_seq;
           if (tcp_header->ack) {
               tcp->snd_una = seg_ack;
-              // tcp->pop_from_retransmission_queue(seg_ack);
+              // tcp->check_retransmission_queue(seg_ack);
           }
 
           if (tcp_seq_gt(tcp->snd_una, tcp->iss)) {
@@ -717,7 +713,7 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
         // "fifth check the ACK field,"
         if (tcp_header->ack) {
           // pop from retransmission queue
-          tcp->pop_from_retransmission_queue(seg_ack);
+          tcp->check_retransmission_queue(seg_ack);
           
           // "if the ACK bit is on"
           // "SYN-RECEIVED STATE"
@@ -1138,9 +1134,9 @@ void tcp_connect(int fd, uint32_t dst_addr, uint16_t dst_port) {
   // update full ack
   tcp->update_recovery_ack();
   // push to retransmission queue
-  tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
+  tcp->push_retransmission_queue(buffer, sizeof(buffer), 0);
   // start retransmission timer
-  Retransmission retransmission_fn;
+  Retransmission_timer retransmission_fn;
   retransmission_fn.fd = fd;
   TIMERS.add_job(retransmission_fn, current_ts_msec());
   return;
@@ -1241,9 +1237,9 @@ ssize_t tcp_write(int fd, const uint8_t *data, size_t size) {
           // update full ack
           tcp->update_recovery_ack();
           // push to retransmission queue
-          tcp->push_to_retransmission_queue(buffer, 52, segment_len);
+          tcp->push_retransmission_queue(buffer, 52, segment_len);
           // start retransmission timer
-          Retransmission retransmission_fn;
+          Retransmission_timer retransmission_fn;
           retransmission_fn.fd = fd;
           TIMERS.add_job(retransmission_fn, current_ts_msec());
         }
@@ -1300,9 +1296,9 @@ void tcp_shutdown(int fd) {
     // update full ack
     tcp->update_recovery_ack();
     // push to retransmission queue
-    tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
+    tcp->push_retransmission_queue(buffer, sizeof(buffer), 0);
     // start retransmission timer
-    Retransmission retransmission_fn;
+    Retransmission_timer retransmission_fn;
     retransmission_fn.fd = fd;
     TIMERS.add_job(retransmission_fn, current_ts_msec());
 
@@ -1339,9 +1335,9 @@ void tcp_shutdown(int fd) {
     // update full ack
     tcp->update_recovery_ack();
     // push to retransmission queue
-    tcp->push_to_retransmission_queue(buffer, sizeof(buffer), 0);
+    tcp->push_retransmission_queue(buffer, sizeof(buffer), 0);
     // start retransmission timer
-    Retransmission retransmission_fn;
+    Retransmission_timer retransmission_fn;
     retransmission_fn.fd = fd;
     TIMERS.add_job(retransmission_fn, current_ts_msec());
 

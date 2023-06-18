@@ -13,23 +13,6 @@
 // default MSS is MTU - 20 - 20 for TCP over IPv4
 #define DEFAULT_MSS (MTU - 20 - 20)
 
-struct Segment {
-  size_t header_len; // segment header length
-  size_t body_len; // segment body length
-  uint8_t buffer[MTU]; // segment data (< MTU bytes)
-  uint64_t start_ms; // the time when segment push to the retransmission queue
-  size_t dup_ack_cnt; // the duplicate ACK count for later Reno's impl
-
-  Segment() { header_len = body_len = dup_ack_cnt = 0; start_ms = 0; }
-  Segment(const uint8_t *_buffer, const size_t _header_len, const size_t _body_len, const uint64_t _start_ms) {
-    header_len = _header_len;
-    body_len = _body_len;
-    memcpy(buffer, _buffer, _header_len + _body_len);
-    start_ms = _start_ms;
-    dup_ack_cnt = 0;
-  }
-};
-
 struct Payload {
   uint32_t seg_seq; // sequence number of payload
   size_t len; // length of payload
@@ -40,6 +23,23 @@ struct Payload {
     seg_seq = _seg_seq;
     len = _len;
     memcpy(data, _data, _len);
+  }
+};
+
+struct Segment {
+  size_t header_length; // segment header length
+  size_t body_length; // segment body length
+  uint8_t buffer[MTU]; // segment data (< MTU bytes)
+  uint64_t start_time; // the time when segment push to the retransmission queue
+  size_t dup_ack_cnt; // the duplicate ACK count for later Reno's impl
+
+  Segment() { header_length = body_length = dup_ack_cnt = 0; start_time = 0; }
+  Segment(const uint8_t *_buffer, const size_t _header_length, const size_t _body_length, const uint64_t _start_ms) {
+    header_length = _header_length;
+    body_length = _body_length;
+    memcpy(buffer, _buffer, _header_length + _body_length);
+    start_time = _start_ms;
+    dup_ack_cnt = 0;
   }
 };
 
@@ -101,10 +101,10 @@ enum RenoState {
   FAST_RECOVERY,
 };
 
-const size_t RECV_BUFF_SIZE = 10240;
-const size_t SEND_BUFF_SIZE = 10240;
-
 const uint64_t RTO = 200; // ms
+
+const size_t SEND_BUFF_SIZE = 10240;
+const size_t RECV_BUFF_SIZE = 10240;
 
 const size_t NAGLE_SIZE = 0;
 
@@ -153,21 +153,15 @@ struct TCP {
   // pending accept queue
   std::deque<int> accept_queue;
 
-  // retransmission queue
-  std::vector<Segment> retransmission_queue;
-
-  // out_of_order queue
   std::vector<Payload> out_of_order_queue;
 
-  // nagle buffer
-  size_t nagle_buffer_size;
-  uint8_t nagle_buffer[MTU];
+  std::vector<Segment> retransmission_queue;
 
-  // timer
-  // nagle timer
+  uint8_t nagle_buffer[MTU];
+  size_t nagle_buffer_size;
+
   uint64_t nagle_timer;
 
-  // reno state
   RenoState reno_state;
 
   // slow start and congestion avoidance
@@ -184,31 +178,23 @@ struct TCP {
   // state transition with debug output
   void set_state(TCPState new_state);
 
-  // update retransmission queue
-  void push_to_retransmission_queue(const uint8_t *buffer, const size_t header_len, const size_t body_len);
-
-  void pop_from_retransmission_queue(const uint32_t seg_ack);
-
-  // handle retransmission queue
-  void retransmission();
-
-  // update out_of_order queue
-  void push_to_out_of_order_queue(const uint8_t *data, const size_t len, const uint32_t seg_seq);
-
-  // handle out_of_order queue
-  void reorder(const uint32_t seg_seq);
-
-  // clear nagle buffer
   void clear_nagle_buffer();
 
-  // state reno state transition with debug output
   void set_reno_state(RenoState new_state);
 
-  // clear dup_ack_cnt
-  inline void clear_dup_ack_cnt();
+  void check_retransmission();
 
-  // update full ack
-  inline void update_recovery_ack();
+  void check_retransmission_queue(const uint32_t seg_ack);
+
+  void push_retransmission_queue(const uint8_t *buffer, const size_t header_length, const size_t body_length);
+
+  void reorder(const uint32_t seg_seq);
+
+  void push_to_out_of_order_queue(const uint8_t *data, const size_t len, const uint32_t seg_seq);
+
+  void update_recovery_ack();
+
+  void clear_dup_ack_cnt();
 };
 
 extern std::vector<TCP *> tcp_connections;
