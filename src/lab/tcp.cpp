@@ -585,7 +585,6 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
           tcp->irs = seg_seq;
           if (tcp_header->ack) {
               tcp->snd_una = seg_ack;
-              // tcp->pop_from_retransmission_queue(seg_ack);
           }
 
           if (tcp_seq_gt(tcp->snd_una, tcp->iss)) {
@@ -624,7 +623,6 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
             // SND.WL1 <- SEG.SEQ
             // SND.WL2 <- SEG.ACK"
             tcp->snd_wnd = seg_wnd;
-            // tcp->snd_wnd = seg_wnd << tcp->wnd_shift_cnt;
             tcp->snd_wl1 = seg_seq;
             tcp->snd_wl2 = seg_ack;
             // UNIMPLEMENTED()
@@ -747,7 +745,6 @@ void process_tcp(const IPHeader *ip, const uint8_t *data, size_t size) {
             if (tcp_seq_lt(tcp->snd_wl1, seg_seq) || 
                 ((tcp->snd_wl1 == seg_seq) && tcp_seq_le(tcp->snd_wl2, seg_ack))) {
                 tcp->snd_wnd = seg_wnd;
-                // tcp->snd_wnd = seg_wnd << tcp->wnd_shift_cnt;
                 tcp->snd_wl1 = seg_seq;
                 tcp->snd_wl2 = seg_ack;
             }
@@ -1048,7 +1045,7 @@ bool verify_tcp_checksum(const IPHeader *ip, const TCPHeader *tcp) {
 
 // TODO(step 1: sequence number comparison and generation)
 bool tcp_seq_lt(uint32_t a, uint32_t b) {
-  return 0 < (b - a) && (b - a) < 0x80000000;
+  return (b - a) < 0x80000000 && (a != b);
 }
 
 bool tcp_seq_le(uint32_t a, uint32_t b) {
@@ -1056,7 +1053,7 @@ bool tcp_seq_le(uint32_t a, uint32_t b) {
 }
 
 bool tcp_seq_gt(uint32_t a, uint32_t b) {
-  return 0 < (a - b) && (a - b) < 0x80000000;
+  return (a - b) < 0x80000000 && (a != b);
 }
 
 bool tcp_seq_ge(uint32_t a, uint32_t b) {
@@ -1286,7 +1283,7 @@ void tcp_shutdown(int fd) {
     tcp_hdr->dest = htons(tcp->remote_port);
     tcp_hdr->seq = htonl(tcp->snd_nxt);
     // flags
-    tcp_hdr->doff = 20 / 4; // 32 bytes
+    tcp_hdr->doff = 20 / 4; // 20 bytes
     tcp_hdr->fin = 1;
     // window size
     tcp_hdr->window = htons(tcp->recv.free_bytes());
@@ -1325,7 +1322,7 @@ void tcp_shutdown(int fd) {
     tcp_hdr->dest = htons(tcp->remote_port);
     tcp_hdr->seq = htonl(tcp->snd_nxt);
     // flags
-    tcp_hdr->doff = 20 / 4; // 32 bytes
+    tcp_hdr->doff = 20 / 4; // 20 bytes
     tcp_hdr->fin = 1;
     // window size
     tcp_hdr->window = htons(tcp->recv.free_bytes());
