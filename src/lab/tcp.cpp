@@ -11,7 +11,6 @@ std::map<int, TCP *> tcp_fds;
 struct Retransmission_timer {
   int fd;
   size_t operator()() {
-    printf("|* Retransmission_timer *|\n");
     TCP *tcp = tcp_fds[fd];
     assert(tcp);
     if (tcp->retransmission_queue.empty()) {
@@ -104,23 +103,22 @@ void TCP::set_reno_state(RenoState new_state) {
 void TCP::push_retransmission_queue(const uint8_t *buffer, const size_t header_length, const size_t body_length) {
   TCPHeader *tcp_hdr = (TCPHeader *)&buffer[20];
   uint32_t seq = ntohl(tcp_hdr->seq);
-  // printf("|* Push Retransmission_timer Queue, seq = %lu *|\n", seq);
+  uint8_t flag = 0;
   for (auto seg : retransmission_queue) {
     TCPHeader *seg_tcp_hdr = (TCPHeader *)&seg.buffer[20];
     uint32_t seg_seq = ntohl(seg_tcp_hdr->seq);
     if (seg_seq == seq) {
-      // printf("|* Already in Retransmission_timer Queue *|\n");
-      return;
+      flag = 1;
+      break;
     }
   }
-  // printf("|* Push Packet *|\n");
-  Segment new_seg = Segment(buffer, header_length, body_length, current_ts_msec());
-  retransmission_queue.push_back(new_seg);
-  // printf("retransmission queue size = %lu\n", retransmission_queue.size());
+  if (flag == 0) {
+    Segment new_seg = Segment(buffer, header_length, body_length, current_ts_msec());
+    retransmission_queue.push_back(new_seg);
+  }
 }
 
 void TCP::check_retransmission_queue(const uint32_t seg_ack) {
-  // printf("|* Pop Retransmission_timer Queue *|\n");
   ssize_t index = -1;
   for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
     auto& seg = retransmission_queue[i];
@@ -162,12 +160,8 @@ void TCP::check_retransmission_queue(const uint32_t seg_ack) {
   }
   // new ACK
   if (index != -1) {
-    // printf("|* Pop Packet *|\n");
     retransmission_queue.erase(retransmission_queue.begin(), retransmission_queue.begin() + index + 1);
-    // "the SYN/ACK and the acknowledgment of the
-    // SYN/ACK MUST NOT increase the size of the congestion window."
     if (state != TCPState::SYN_SENT && state != TCPState::SYN_RCVD) {
-      // update cwnd
       if (reno_state == RenoState::SLOW_START) {
         cwnd += DEFAULT_MSS;
         printf("slow start: cwnd = %u ssthresh = %u\n", cwnd, ssthresh);
@@ -182,17 +176,12 @@ void TCP::check_retransmission_queue(const uint32_t seg_ack) {
           printf("congestion avoidance: cwnd = %u ssthresh = %u\n", cwnd, ssthresh); 
         }
       } else {
-        // cwnd = ssthresh;
-        // printf("fast retransmit: cwnd = %u ssthresh = %u\n", cwnd, ssthresh); 
-        // set_reno_state(RenoState::CONGESTION_AVOIDANCE);
         assert(seg_ack <= recovery_ack);
         if (seg_ack < recovery_ack) {
-          // retransmit next missing packet
           for (ssize_t i = 0, iEnd = retransmission_queue.size(); i < iEnd; i++) {
             auto& seg = retransmission_queue[i];
             TCPHeader *tcp_hdr = (TCPHeader *)&seg.buffer[20];
             uint32_t seg_seq = ntohl(tcp_hdr->seq);
-            // reset timeout
             seg.start_time = current_ts_msec();
             if (seg_seq == seg_ack) {
               printf("|* Fast Retransmit Partial ACK *|\n"); 
@@ -206,25 +195,19 @@ void TCP::check_retransmission_queue(const uint32_t seg_ack) {
           set_reno_state(RenoState::CONGESTION_AVOIDANCE);
         }
       }
-      // dupACKcount = 0
       clear_dup_ack_cnt();
     }
   }
-  // printf("retransmission queue size = %lu\n", retransmission_queue.size());
 }
 
 void TCP::check_retransmission() {
   uint64_t current_ms = current_ts_msec();
   for (auto seg : retransmission_queue) {
     if (RTO + seg.start_time < current_ms) {
-      printf("|* Retransmission_timer Packet *|\n");
       set_reno_state(RenoState::SLOW_START);
-      // cwnd = MSS; ssthresh = cwnd / 2;
       ssthresh = cwnd >> 1;
       cwnd = DEFAULT_MSS;
-      // dupACKcount = 0
       clear_dup_ack_cnt();
-      // retransmit missing segment
       send_packet(seg.buffer, seg.header_length + seg.body_length);
     }
   }
