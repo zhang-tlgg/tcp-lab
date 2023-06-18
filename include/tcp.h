@@ -13,36 +13,6 @@
 // default MSS is MTU - 20 - 20 for TCP over IPv4
 #define DEFAULT_MSS (MTU - 20 - 20)
 
-struct OrderSegment {
-  uint32_t seg_seq; // sequence number of ordersegment
-  size_t len; // length of ordersegment
-  uint8_t data[MTU]; // ordersegment data
-
-  OrderSegment() { seg_seq = 0; len =  0; }
-  OrderSegment(const uint8_t *_data, const size_t _len, const uint32_t _seg_seq) {
-    seg_seq = _seg_seq;
-    len = _len;
-    memcpy(data, _data, _len);
-  }
-};
-
-struct Segment {
-  size_t header_length; // segment header length
-  size_t body_length; // segment body length
-  uint8_t buffer[MTU]; // segment data (< MTU bytes)
-  uint64_t start_time; // the time when segment push to the retransmission queue
-  size_t repeat_ack; // the duplicate ACK count for later Reno's impl
-
-  Segment() { header_length = body_length = repeat_ack = 0; start_time = 0; }
-  Segment(const uint8_t *_buffer, const size_t _header_length, const size_t _body_length, const uint64_t _start_ms) {
-    header_length = _header_length;
-    body_length = _body_length;
-    memcpy(buffer, _buffer, _header_length + _body_length);
-    start_time = _start_ms;
-    repeat_ack = 0;
-  }
-};
-
 // taken from linux source include/uapi/linux/tcp.h
 // RFC793 Page 15
 struct TCPHeader {
@@ -77,6 +47,36 @@ struct TCPHeader {
   be16_t window;
   be16_t checksum;
   be16_t urg_ptr;
+};
+
+struct OrderSegment {
+  uint32_t seg_seq; // sequence number of ordersegment
+  size_t len; // length of ordersegment
+  uint8_t data[MTU]; // ordersegment data
+
+  OrderSegment() { seg_seq = 0; len =  0; }
+  OrderSegment(const uint8_t *_data, const size_t _len, const uint32_t _seg_seq) {
+    seg_seq = _seg_seq;
+    len = _len;
+    memcpy(data, _data, _len);
+  }
+};
+
+struct Segment {
+  size_t header_length; // segment header length
+  size_t body_length; // segment body length
+  uint8_t buffer[MTU]; // segment data (< MTU bytes)
+  uint64_t start_time; // the time when segment push to the retransmission queue
+  size_t repeat_ack; // the duplicate ACK count for later Reno's impl
+
+  Segment() { header_length = body_length = repeat_ack = 0; start_time = 0; }
+  Segment(const uint8_t *_buffer, const size_t _header_length, const size_t _body_length, const uint64_t _start_ms) {
+    header_length = _header_length;
+    body_length = _body_length;
+    memcpy(buffer, _buffer, _header_length + _body_length);
+    start_time = _start_ms;
+    repeat_ack = 0;
+  }
 };
 
 // RFC793 Page 21
@@ -157,15 +157,18 @@ struct TCP {
 
   std::vector<Segment> retransmission_queue;
 
+  // nagle 算法
   uint8_t nagle_buffer[MTU];
+
   size_t nagle_buffer_size;
 
   uint64_t nagle_time_last;
 
+  // New Reno 算法
   RenoState reno_state;
 
-  // slow start and congestion avoidance
   uint32_t cwnd;
+  
   uint32_t ssthresh;
 
   uint32_t delta_cwnd;
@@ -180,21 +183,21 @@ struct TCP {
 
   void send_nagle_buffer();
 
+  void check_order(const uint32_t seg_seq);
+
   void set_reno_state(RenoState new_state);
 
   void check_retransmission();
 
-  void check_retransmission_queue(const uint32_t seg_ack);
-
   void push_retransmission_queue(const uint8_t *buffer, const size_t header_length, const size_t body_length);
 
-  void check_order(const uint32_t seg_seq);
+  void clear_repeat_ack();
 
   void push_order_list(const uint8_t *data, const size_t len, const uint32_t seg_seq);
 
   void update_recovery_ack();
 
-  void clear_repeat_ack();
+  void check_retransmission_queue(const uint32_t seg_ack);
 };
 
 extern std::vector<TCP *> tcp_connections;

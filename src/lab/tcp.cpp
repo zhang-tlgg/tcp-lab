@@ -8,6 +8,7 @@
 // mapping from fd to TCP connection
 std::map<int, TCP *> tcp_fds;
 
+// timer 计时器
 struct Retransmission_timer {
   int fd;
   size_t operator()() {
